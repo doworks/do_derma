@@ -30,6 +30,7 @@ from do_derma.settings import (
 	ENFORCEMENT_WARN,
 	FEATURE_TOGGLES,
 	get_feature_toggles,
+	get_prescription_warehouse,
 	get_readiness_settings,
 )
 
@@ -3421,6 +3422,36 @@ def submit_derma_prescriptions(encounter=None, appointment=None, patient=None):
 	encounter_doc.make_medication_request()
 	encounter_doc.save(ignore_permissions=True)
 	return get_derma_prescriptions(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
+def get_medication_items(medication: str) -> dict[str, Any]:
+	"""The medication's enabled linked items with their stock in the prescription warehouse."""
+	_ensure_clinical_access()
+	warehouse = get_prescription_warehouse()
+	item_codes = frappe.get_all(
+		"Medication Linked Item",
+		filters={"parent": medication, "parenttype": "Medication"},
+		pluck="item",
+		order_by="idx asc",
+	)
+	items = []
+	for item_code in filter(None, item_codes):
+		item = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom", "disabled"], as_dict=True)
+		if not item or item.disabled:
+			continue
+		stock = None
+		if warehouse:
+			stock = flt(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty"))
+		items.append(
+			{
+				"item_code": item_code,
+				"item_name": item.item_name,
+				"stock_uom": item.stock_uom,
+				"actual_qty": stock,
+			}
+		)
+	return {"warehouse": warehouse or "", "items": items}
 
 
 @frappe.whitelist()

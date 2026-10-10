@@ -48,6 +48,17 @@ def get_expiring_soon_days(settings) -> int:
 	return DEFAULT_EXPIRING_SOON_DAYS if value is None else max(cint(value), 0)
 
 
+PRESCRIPTION_WAREHOUSE_FIELD = "prescription_warehouse"
+
+
+def get_prescription_warehouse() -> str | None:
+	"""Where the Rx tab reads stock from, None when the site never set one."""
+	settings = get_settings_doc()
+	if not settings or not settings.meta.has_field(PRESCRIPTION_WAREHOUSE_FIELD):
+		return None
+	return settings.get(PRESCRIPTION_WAREHOUSE_FIELD) or None
+
+
 def get_readiness_settings() -> dict[str, Any]:
 	"""How session completion is gated, with `is_configurable` saying whether this site
 	carries the fields at all. Every fallback is today's behaviour, never stricter."""

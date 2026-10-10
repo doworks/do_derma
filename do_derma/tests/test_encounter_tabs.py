@@ -319,6 +319,92 @@ class TestSubmitPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 			api.submit_derma_prescriptions(encounter="does-not-matter")
 
 
+class TestMedicationItems(PrescriptionHelpers, IntegrationTestCase):
+	"""The Rx tab's item chooser: a medication's linked items with stock in the pharmacy warehouse."""
+
+	def setUp(self):
+		super().setUp()
+		self.warehouse = frappe.db.get_value("Warehouse", {"is_group": 0}, "name")
+		self.medication = (
+			frappe.get_doc(
+				{
+					"doctype": "Medication",
+					"generic_name": f"DermaMed{frappe.generate_hash(length=8)}",
+					"dosage_form": frappe.db.get_value("Dosage Form", {}, "name"),
+				}
+			)
+			.insert(ignore_permissions=True)
+			.name
+		)
+
+	def _set_warehouse(self, warehouse):
+		frappe.db.set_single_value("Derma Settings", "prescription_warehouse", warehouse)
+		frappe.clear_document_cache("Derma Settings", "Derma Settings")
+
+	def _link_item(self, actual_qty=None, disabled=0):
+		token = frappe.generate_hash(length=8)
+		item_code = (
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": f"DermaRx{token}",
+					"item_name": f"Derma Rx {token}",
+					"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+					"stock_uom": "Nos",
+					"is_stock_item": 1,
+					"disabled": disabled,
+				}
+			)
+			.insert(ignore_permissions=True)
+			.name
+		)
+		parent = frappe.get_doc("Medication", self.medication)
+		frappe.get_doc(
+			{
+				"doctype": "Medication Linked Item",
+				"parent": self.medication,
+				"parenttype": "Medication",
+				"parentfield": "linked_items",
+				"idx": len(parent.linked_items) + 1,
+				"item": item_code,
+				"item_code": item_code,
+			}
+		).db_insert()
+		if actual_qty is not None:
+			frappe.get_doc(
+				{"doctype": "Bin", "item_code": item_code, "warehouse": self.warehouse, "actual_qty": actual_qty}
+			).insert(ignore_permissions=True)
+		return item_code
+
+	def test_items_carry_stock_in_the_prescription_warehouse(self):
+		self._set_warehouse(self.warehouse)
+		stocked = self._link_item(actual_qty=7)
+		empty = self._link_item()
+		result = api.get_medication_items(self.medication)
+		self.assertEqual(result["warehouse"], self.warehouse)
+		self.assertEqual(
+			[(row["item_code"], row["actual_qty"], row["stock_uom"]) for row in result["items"]],
+			[(stocked, 7, "Nos"), (empty, 0, "Nos")],
+		)
+
+	def test_no_warehouse_means_unknown_stock(self):
+		self._set_warehouse(None)
+		self._link_item(actual_qty=7)
+		result = api.get_medication_items(self.medication)
+		self.assertEqual(result["warehouse"], "")
+		self.assertIsNone(result["items"][0]["actual_qty"])
+
+	def test_disabled_items_are_skipped(self):
+		self._set_warehouse(self.warehouse)
+		self._link_item(disabled=1)
+		self.assertEqual(api.get_medication_items(self.medication)["items"], [])
+
+	def test_is_gated(self):
+		frappe.set_user(self._make_limited_user())
+		with self.assertRaises(frappe.PermissionError):
+			api.get_medication_items(self.medication)
+
+
 class TestConsentPreview(DermaTestHelpers, IntegrationTestCase):
 	"""A template the health app cannot render must name itself, not explode."""
 
