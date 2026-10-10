@@ -33,7 +33,6 @@ from do_derma.settings import (
 	get_readiness_settings,
 )
 
-MAX_PRESCRIPTION_REPEATS = 12
 UNINSTALLED_APP_MESSAGE = re.compile(r"App ([a-z0-9_]+) is not installed", re.IGNORECASE)
 
 DERMA_FINDING_FIELDS = [
@@ -2212,17 +2211,6 @@ def _drug_prescription_row(source: Any, allowed: set[str]) -> dict[str, Any]:
 	return {key: values.get(key) for key in allowed if key in values}
 
 
-def _validate_prescription_rows(rows: list[dict[str, Any]]) -> None:
-	"""Refuse a repeat count no clinician means, which a typo in the wrong column produces."""
-	for index, row in enumerate(rows, start=1):
-		repeats = flt(row.get("number_of_repeats_allowed") or 0)
-		if repeats < 0 or repeats > MAX_PRESCRIPTION_REPEATS:
-			frappe.throw(
-				_("Row {0}: repeats must be between 0 and {1}.").format(index, MAX_PRESCRIPTION_REPEATS),
-				frappe.ValidationError,
-			)
-
-
 def _merge_ordered_prescriptions(
 	existing: list[dict[str, Any]], incoming: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -3403,7 +3391,6 @@ def set_derma_prescriptions(payload=None, encounter=None, appointment=None, pati
 	_ensure_encounter_open(encounter_doc.name)
 	allowed = _drug_prescription_fields()
 	prescriptions = [_drug_prescription_row(row, allowed) for row in rows if isinstance(row, dict)]
-	_validate_prescription_rows(prescriptions)
 	prescriptions = _merge_ordered_prescriptions(_drug_prescription_rows(encounter_doc), prescriptions)
 	encounter_doc.set("drug_prescription", prescriptions)
 	encounter_doc.save(ignore_permissions=True)

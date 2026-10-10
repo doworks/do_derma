@@ -144,14 +144,13 @@ class TestDermaPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		row = saved["drug_prescription"][0]
 		self.assertEqual((row["interval"], row["interval_uom"], row["comment"]), (2, "Day", "After meals"))
 
-	def test_an_absurd_repeat_count_is_refused(self):
+	def test_a_legacy_repeat_count_is_kept_as_sent(self):
+		"""The tab no longer shows repeats; a stored count is resent untouched, never judged."""
 		encounter = self._make_encounter(self._make_patient())
-		with self.assertRaises(frappe.ValidationError):
-			api.set_derma_prescriptions(
-				payload=json.dumps([self._row(number_of_repeats_allowed=500)]),
-				encounter=encounter.name,
-			)
-		self.assertEqual(api.get_derma_prescriptions(encounter=encounter.name)["drug_prescription"], [])
+		saved = api.set_derma_prescriptions(
+			payload=json.dumps([self._row(number_of_repeats_allowed=500)]), encounter=encounter.name
+		)
+		self.assertEqual(saved["drug_prescription"][0]["number_of_repeats_allowed"], 500)
 
 	def test_is_gated(self):
 		frappe.set_user(self._make_limited_user())
