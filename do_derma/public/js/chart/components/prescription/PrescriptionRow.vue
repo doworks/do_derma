@@ -1,12 +1,13 @@
 <template>
   <tr ref="rowElement" class="prescription-row" :class="{ 'is-next': isNext }" data-test="prescription-row">
     <td class="medication-cell">
-      <div
+      <MedicationSearch
         v-if="openField === 'medication'"
-        :ref="setPickerHost"
-        class="picker-host"
-        @keydown.escape.stop="closePicker('medication')"
-      ></div>
+        :encounter="encounter"
+        :value="row.values.medication"
+        @pick="emit('pick-medication', $event)"
+        @close="closePicker('medication')"
+      />
       <button
         v-else
         type="button"
@@ -38,7 +39,10 @@
           @click="chooseItem(item.item_code)"
         >
           <span>{{ item.item_name || item.item_code }}</span>
-          <small>{{ getStockLabel(item) }}</small>
+          <small>
+            <span v-if="item.is_suggested" class="suggested-tag">{{ __("suggested") }}</span>
+            {{ getStockLabel(item) }}
+          </small>
         </button>
         <p v-if="!row.warehouse" class="chooser-hint">
           {{ __("Set a Prescription Warehouse in Derma Settings to see stock.") }}
@@ -48,7 +52,7 @@
         </button>
       </div>
       <button
-        v-else-if="!readOnly && row.values.medication && (row.values.drug_code || row.linkedItems.length > 1)"
+        v-else-if="!readOnly && row.values.medication && (row.values.drug_code || row.linkedItems.length)"
         type="button"
         class="item-chip"
         data-field="drug_code"
@@ -117,11 +121,12 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from "vue"
+import MedicationSearch from "./MedicationSearch.vue"
+import { getStockLabel } from "./stock.js"
 
 const __ = window.__ || ((text) => text)
 
 const LINK_OPTIONS = {
-  medication: "Medication",
   dosage: "Prescription Dosage",
   period: "Prescription Duration",
 }
@@ -133,6 +138,7 @@ const LINK_COLUMNS = [
 
 const props = defineProps({
   row: { type: Object, required: true },
+  encounter: { type: String, default: "" },
   readOnly: { type: Boolean, default: false },
   isNext: { type: Boolean, default: false },
   duplicateOf: { type: Number, default: 0 },
@@ -140,7 +146,7 @@ const props = defineProps({
   missing: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(["update", "open-picker", "close-picker", "choose-item", "remove"])
+const emit = defineEmits(["update", "open-picker", "close-picker", "choose-item", "pick-medication", "remove"])
 
 // Older rows carry only a drug name or item code.
 const medicationLabel = computed(() => {
@@ -167,7 +173,7 @@ let control = null
 watch(
   () => props.openField,
   async (field) => {
-    if (!field || field === "drug_code") return
+    if (!LINK_OPTIONS[field]) return
     await nextTick()
     mountPicker(field)
   },
@@ -210,17 +216,11 @@ function mountPicker(field) {
 
 // Save calls this so a typed value desk is still validating reaches the row first.
 async function commitPicker() {
-  if (!props.openField || !control?.$input) return
+  if (!LINK_OPTIONS[props.openField] || !control?.$input) return
   await control.parse_validate_and_set_in_model(control.get_input_value())
 }
 
 defineExpose({ commitPicker })
-
-function getStockLabel(item) {
-  if (item.actual_qty == null) return "—"
-  if (item.actual_qty === 0) return __("0 in stock")
-  return `${item.actual_qty} ${item.stock_uom || ""}`.trim()
-}
 
 function chooseItem(itemCode) {
   emit("update", "drug_code", itemCode)
@@ -356,6 +356,15 @@ function closePicker(field) {
 
 .item-option.is-other {
   color: var(--chart-accent);
+}
+
+.suggested-tag {
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--chart-accent-soft);
+  color: var(--chart-accent-strong);
+  font-size: 11px;
 }
 
 .chooser-hint {

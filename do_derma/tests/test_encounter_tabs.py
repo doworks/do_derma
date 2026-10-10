@@ -327,6 +327,9 @@ class MedicationItemHelpers(PrescriptionHelpers):
 		self.token = frappe.generate_hash(length=8)
 		self.warehouse = frappe.db.get_value("Warehouse", {"is_group": 0}, "name")
 		self.medication = self._make_medication(f"DermaMed{self.token}")
+		# Some fixtures commit, so the site's own setting is put back explicitly.
+		original = frappe.db.get_single_value("Derma Settings", "prescription_warehouse")
+		self.addCleanup(self._set_warehouse, original)
 		self._set_warehouse(self.warehouse)
 
 	def _make_medication(self, name):

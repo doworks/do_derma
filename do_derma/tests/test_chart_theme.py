@@ -860,6 +860,8 @@ class TestAssessmentRestyle(TestCase):
 PRESCRIPTION_DIR = CHART_DIR / "components" / "prescription"
 PRESCRIPTION_PANEL = PRESCRIPTION_DIR / "PrescriptionPanel.vue"
 PRESCRIPTION_ROW = PRESCRIPTION_DIR / "PrescriptionRow.vue"
+MEDICATION_SEARCH = PRESCRIPTION_DIR / "MedicationSearch.vue"
+PRESCRIPTION_STOCK = PRESCRIPTION_DIR / "stock.js"
 
 
 class TestPrescriptionRow(TestCase):
@@ -875,7 +877,7 @@ class TestPrescriptionRow(TestCase):
 	def test_pickers_keep_escape_from_desk(self):
 		template, _, _ = get_component_parts(PRESCRIPTION_ROW)
 		hosts = re.findall(r'<div[^>]*class="picker-host"[^>]*>', template)
-		self.assertEqual(len(hosts), 2)
+		self.assertEqual(len(hosts), 1)
 		for host in hosts:
 			self.assertIn("@keydown.escape.stop", host)
 
@@ -919,9 +921,10 @@ class TestPrescriptionRow(TestCase):
 		self.assertIn('__("Choose another medication")', chooser)
 		self.assertIn("@keydown.escape.stop", chooser)
 		self.assertIn("'is-out': item.actual_qty === 0", chooser)
-		self.assertIn('__("0 in stock")', script)
+		self.assertIn('__("0 in stock")', PRESCRIPTION_STOCK.read_text())
 		self.assertIn('__("Set a Prescription Warehouse in Derma Settings to see stock.")', template)
 		self.assertIn(".item-option.is-out", style)
+		self.assertIn('<span v-if="item.is_suggested" class="suggested-tag">{{ __("suggested") }}</span>', chooser)
 
 	def test_notes_are_an_always_visible_column(self):
 		template, script, style = get_component_parts(PRESCRIPTION_ROW)
@@ -958,6 +961,65 @@ class TestPrescriptionRow(TestCase):
 		self.assertRegex(
 			style, r"\.icon-btn\.danger:hover:not\(:disabled\)[^{]*\{[^}]*var\(--chart-danger-text\)"
 		)
+
+
+class TestMedicationSearch(TestCase):
+	"""The Rx medication picker: ranked medications with their items and stock (2026-10-10)."""
+
+	def test_the_row_opens_the_search_instead_of_a_desk_control(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_ROW)
+		cell = get_element(template, '<td class="medication-cell"')
+		self.assertIn("<MedicationSearch", cell)
+		self.assertIn(':encounter="encounter"', cell)
+		self.assertIn("@pick=\"emit('pick-medication', $event)\"", cell)
+		self.assertNotIn('medication: "Medication"', script)
+		self.assertIn("if (!LINK_OPTIONS[field]) return", script)
+
+	def test_search_asks_the_ranked_endpoint_and_drops_stale_answers(self):
+		_, script, _ = get_component_parts(MEDICATION_SEARCH)
+		self.assertIn('"do_derma.api.search_prescription_medications"', script)
+		self.assertIn("const token = ++searchToken", script)
+		self.assertIn("if (token !== searchToken) return", script)
+		self.assertIn("SEARCH_DELAY_MS", script)
+
+	def test_medications_and_their_items_share_one_keyboard_list(self):
+		template, script, style = get_component_parts(MEDICATION_SEARCH)
+		for handler in ("@keydown.down.prevent", "@keydown.up.prevent", "@keydown.enter.prevent", "@keydown.escape.stop"):
+			self.assertIn(handler, template)
+		self.assertIn("function move(step)", script)
+		self.assertIn(":data-test=\"option.item ? 'medication-item-option' : 'medication-option'\"", template)
+		self.assertIn("@mousedown.prevent", template)
+		self.assertIn('__("used {0}×")', template)
+		self.assertIn('__("suggested")', template)
+		self.assertIn("'is-out': option.item && option.item.actual_qty === 0", template)
+		self.assertIn(".search-option.is-item", style)
+
+	def test_clicking_outside_closes_the_search(self):
+		template, _, _ = get_component_parts(MEDICATION_SEARCH)
+		self.assertIn("@blur=\"emit('close')\"", template)
+
+	def test_stock_reads_the_same_everywhere(self):
+		stock = PRESCRIPTION_STOCK.read_text()
+		self.assertIn("export function getStockLabel(item)", stock)
+		for path in (PRESCRIPTION_ROW, MEDICATION_SEARCH):
+			_, script, _ = get_component_parts(path)
+			self.assertIn('import { getStockLabel } from "./stock.js"', script)
+			self.assertNotIn("function getStockLabel", script)
+
+	def test_only_a_linked_item_is_picked_for_the_doctor(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		only = script.split("function getOnlyLinkedItem(items)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("!items[0].is_suggested", only)
+		repeat = script.split("async function refreshLinkedItem", 1)[1].split("\n}", 1)[0]
+		self.assertIn("getOnlyLinkedItem(items)", repeat)
+
+	def test_picking_an_item_skips_the_chooser(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('@pick-medication="(pick) => pickMedication(draft, pick)"', template)
+		self.assertIn(':encounter="encounterName"', template)
+		apply = script.split("async function applyMedication", 1)[1].split("\n}", 1)[0]
+		self.assertIn("picked?.drugCode ? picked : loadMedicationItems(draft)", apply)
+		self.assertIn("if (!drugCode && draft.linkedItems.length)", apply)
 
 
 PRESCRIPTION_HOOKS = (
@@ -1174,7 +1236,7 @@ class TestPrescriptionPanelRestyle(TestCase):
 		self.assertIn('"do_derma.api.get_medication_items"', script)
 		self.assertNotIn("patient_encounter.get_medications", script)
 		apply = script.split("async function applyMedication", 1)[1].split("\n}", 1)[0]
-		self.assertIn("draft.linkedItems.length > 1", apply)
+		self.assertIn("getOnlyLinkedItem(draft.linkedItems)", apply)
 		self.assertIn('openPicker.value = { key: draft.key, field: "drug_code" }', apply)
 		repeat = script.split("function repeatRow(row)", 1)[1].split("\n}", 1)[0]
 		self.assertIn("refreshLinkedItem(draft)", repeat)

@@ -120,6 +120,8 @@
           @update="(field, value) => updateField(draft, field, value)"
           @open-picker="(field) => (openPicker = { key: draft.key, field })"
           @close-picker="openPicker = null"
+          :encounter="encounterName"
+          @pick-medication="(pick) => pickMedication(draft, pick)"
           @choose-item="openItemChooser(draft)"
           @remove="removeRow(draft)"
         />
@@ -334,12 +336,25 @@ async function loadMedicationItems(draft) {
   return response?.message || { warehouse: "", items: [] }
 }
 
+// Always reloads: search results carry only the first few items, and stock moves.
 async function openItemChooser(draft) {
-  if (!draft.linkedItems.length) {
-    const { warehouse, items } = await loadMedicationItems(draft)
-    Object.assign(draft, { warehouse, linkedItems: items })
-  }
+  const { warehouse, items } = await loadMedicationItems(draft)
+  Object.assign(draft, { warehouse, linkedItems: items })
   openPicker.value = { key: draft.key, field: "drug_code" }
+}
+
+// One Linked Item is the obvious pick; a suggested item is only ever the doctor's choice.
+function getOnlyLinkedItem(items) {
+  return items.length === 1 && !items[0].is_suggested ? items[0].item_code : ""
+}
+
+function pickMedication(draft, picked) {
+  openPicker.value = null
+  if (picked.medication !== draft.values.medication) return applyMedication(draft, picked.medication, picked)
+  if (picked.drugCode) {
+    Object.assign(draft, { warehouse: picked.warehouse, linkedItems: picked.items })
+    draft.values.drug_code = picked.drugCode
+  }
 }
 
 // A repeated line keeps its item only while the medication still links it, with today's stock.
@@ -348,7 +363,7 @@ async function refreshLinkedItem(draft) {
     const { warehouse, items } = await loadMedicationItems(draft)
     Object.assign(draft, { warehouse, linkedItems: items })
     if (!items.some((item) => item.item_code === draft.values.drug_code)) {
-      draft.values.drug_code = items.length === 1 ? items[0].item_code : ""
+      draft.values.drug_code = getOnlyLinkedItem(items)
     }
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -356,7 +371,7 @@ async function refreshLinkedItem(draft) {
   }
 }
 
-async function applyMedication(draft, medication) {
+async function applyMedication(draft, medication, picked = null) {
   if (medication === draft.values.medication) return
   const token = ++draft.lookup
   draft.values = { ...draft.values, medication, drug_code: "", dosage: "", period: "", dosage_form: "" }
@@ -367,7 +382,7 @@ async function applyMedication(draft, medication) {
   draft.filling = true
   try {
     const [itemsResult, defaultsResponse] = await Promise.all([
-      loadMedicationItems(draft),
+      picked?.drugCode ? picked : loadMedicationItems(draft),
       frappe.db.get_value("Medication", medication, [
         "default_prescription_dosage",
         "default_prescription_duration",
@@ -378,14 +393,15 @@ async function applyMedication(draft, medication) {
     draft.linkedItems = itemsResult.items
     draft.warehouse = itemsResult.warehouse
     const defaults = defaultsResponse?.message || {}
+    const drugCode = picked?.drugCode || getOnlyLinkedItem(draft.linkedItems)
     draft.values = {
       ...draft.values,
-      drug_code: draft.linkedItems.length === 1 ? draft.linkedItems[0].item_code : "",
+      drug_code: drugCode,
       dosage: defaults.default_prescription_dosage || "",
       period: defaults.default_prescription_duration || "",
       dosage_form: defaults.dosage_form || "",
     }
-    if (draft.linkedItems.length > 1) openPicker.value = { key: draft.key, field: "drug_code" }
+    if (!drugCode && draft.linkedItems.length) openPicker.value = { key: draft.key, field: "drug_code" }
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn("Failed to apply medication defaults", error)
