@@ -271,6 +271,54 @@ class TestOrderedPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 			)
 
 
+class TestSubmitPrescriptions(PrescriptionHelpers, IntegrationTestCase):
+	"""Submit Rx orders the saved rows now; the visit itself stays open."""
+
+	def _requests(self, encounter):
+		return frappe.get_all("Medication Request", {"order_group": encounter.name}, pluck="name")
+
+	def test_submit_orders_saved_rows_and_leaves_the_visit_open(self):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)
+		result = api.submit_derma_prescriptions(encounter=encounter.name)
+		self.assertTrue(result["drug_prescription"][0]["medication_request"])
+		self.assertEqual(len(self._requests(encounter)), 1)
+		self.assertEqual(frappe.db.get_value("Patient Encounter", encounter.name, "docstatus"), 0)
+
+	def test_a_second_submit_orders_only_new_rows(self):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)
+		ordered = api.submit_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+		api.set_derma_prescriptions(payload=json.dumps([*ordered, self._row()], default=str), encounter=encounter.name)
+		api.submit_derma_prescriptions(encounter=encounter.name)
+		self.assertEqual(len(self._requests(encounter)), 2)
+
+	def test_a_second_submit_with_nothing_new_is_refused(self):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)
+		api.submit_derma_prescriptions(encounter=encounter.name)
+		with self.assertRaisesRegex(frappe.ValidationError, "Nothing to order"):
+			api.submit_derma_prescriptions(encounter=encounter.name)
+		self.assertEqual(len(self._requests(encounter)), 1)
+
+	def test_completing_after_submit_orders_nothing_twice(self):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)
+		api.submit_derma_prescriptions(encounter=encounter.name)
+		frappe.get_doc("Patient Encounter", encounter.name).submit()
+		self.assertEqual(len(self._requests(encounter)), 1)
+
+	def test_a_completed_visit_cannot_submit(self):
+		encounter = self._make_encounter(self._make_patient(), docstatus=1)
+		with self.assertRaises(frappe.ValidationError):
+			api.submit_derma_prescriptions(encounter=encounter.name)
+
+	def test_is_gated(self):
+		frappe.set_user(self._make_limited_user())
+		with self.assertRaises(frappe.PermissionError):
+			api.submit_derma_prescriptions(encounter="does-not-matter")
+
+
 class TestConsentPreview(DermaTestHelpers, IntegrationTestCase):
 	"""A template the health app cannot render must name itself, not explode."""
 

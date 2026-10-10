@@ -3406,6 +3406,24 @@ def set_derma_prescriptions(payload=None, encounter=None, appointment=None, pati
 
 
 @frappe.whitelist()
+def submit_derma_prescriptions(encounter=None, appointment=None, patient=None):
+	"""Order the saved, not-yet-ordered rows as Medication Requests; the visit stays open."""
+	_ensure_clinical_access()
+	encounter_doc = _resolve_patient_encounter_doc(
+		encounter=encounter, appointment=appointment, patient=patient, ptype="write"
+	)
+	if not encounter_doc:
+		frappe.throw(_("No encounter found for this session."), frappe.ValidationError)
+	_ensure_encounter_open(encounter_doc.name)
+	rows = encounter_doc.get("drug_prescription") or []
+	if not any((row.medication or row.drug_code) and not row.medication_request for row in rows):
+		frappe.throw(_("Nothing to order: save new medications first."), frappe.ValidationError)
+	encounter_doc.make_medication_request()
+	encounter_doc.save(ignore_permissions=True)
+	return get_derma_prescriptions(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
 def get_derma_anesthesia(encounter=None, appointment=None, patient=None):
 	_ensure_clinical_access()
 	encounter_doc = _resolve_patient_encounter_doc(
