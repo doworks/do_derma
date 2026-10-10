@@ -120,6 +120,7 @@
           @update="(field, value) => updateField(draft, field, value)"
           @open-picker="(field) => (openPicker = { key: draft.key, field })"
           @close-picker="openPicker = null"
+          @choose-item="openItemChooser(draft)"
           @remove="removeRow(draft)"
         />
       </tbody>
@@ -250,7 +251,7 @@ watch(() => props.error, () => (errorPayload.value = JSON.stringify(getPayload()
 
 function makeDraft(original = {}) {
   const values = Object.fromEntries(VALUE_FIELDS.map((field) => [field, original[field] ?? ""]))
-  return { key: ++nextKey, original, values, linkedItems: [], lookup: 0, filling: false }
+  return { key: ++nextKey, original, values, linkedItems: [], warehouse: "", lookup: 0, filling: false }
 }
 
 function resetDrafts() {
@@ -296,8 +297,10 @@ function isPrescribed(medication) {
 function repeatRow(row) {
   if (isPrescribed(row.medication)) return
   ensureTrailingDraft()
-  drafts.value.at(-1).values = Object.fromEntries(VALUE_FIELDS.map((field) => [field, row[field] ?? ""]))
+  const draft = drafts.value.at(-1)
+  draft.values = Object.fromEntries(VALUE_FIELDS.map((field) => [field, row[field] ?? ""]))
   ensureTrailingDraft()
+  refreshLinkedItem(draft)
 }
 
 function printPrescription() {
@@ -326,6 +329,33 @@ function updateField(draft, field, value) {
   draft.values[field] = value
 }
 
+async function loadMedicationItems(draft) {
+  const response = await frappe.call("do_derma.api.get_medication_items", { medication: draft.values.medication })
+  return response?.message || { warehouse: "", items: [] }
+}
+
+async function openItemChooser(draft) {
+  if (!draft.linkedItems.length) {
+    const { warehouse, items } = await loadMedicationItems(draft)
+    Object.assign(draft, { warehouse, linkedItems: items })
+  }
+  openPicker.value = { key: draft.key, field: "drug_code" }
+}
+
+// A repeated line keeps its item only while the medication still links it, with today's stock.
+async function refreshLinkedItem(draft) {
+  try {
+    const { warehouse, items } = await loadMedicationItems(draft)
+    Object.assign(draft, { warehouse, linkedItems: items })
+    if (!items.some((item) => item.item_code === draft.values.drug_code)) {
+      draft.values.drug_code = items.length === 1 ? items[0].item_code : ""
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn("Failed to load linked items", error)
+  }
+}
+
 async function applyMedication(draft, medication) {
   if (medication === draft.values.medication) return
   const token = ++draft.lookup
@@ -336,10 +366,8 @@ async function applyMedication(draft, medication) {
   ensureTrailingDraft()
   draft.filling = true
   try {
-    const [itemsResponse, defaultsResponse] = await Promise.all([
-      frappe.call("healthcare.healthcare.doctype.patient_encounter.patient_encounter.get_medications", {
-        medication,
-      }),
+    const [itemsResult, defaultsResponse] = await Promise.all([
+      loadMedicationItems(draft),
       frappe.db.get_value("Medication", medication, [
         "default_prescription_dosage",
         "default_prescription_duration",
@@ -347,15 +375,17 @@ async function applyMedication(draft, medication) {
       ]),
     ])
     if (token !== draft.lookup) return
-    draft.linkedItems = (itemsResponse?.message || []).map((entry) => entry?.item).filter(Boolean)
+    draft.linkedItems = itemsResult.items
+    draft.warehouse = itemsResult.warehouse
     const defaults = defaultsResponse?.message || {}
     draft.values = {
       ...draft.values,
-      drug_code: draft.linkedItems.length === 1 ? draft.linkedItems[0] : "",
+      drug_code: draft.linkedItems.length === 1 ? draft.linkedItems[0].item_code : "",
       dosage: defaults.default_prescription_dosage || "",
       period: defaults.default_prescription_duration || "",
       dosage_form: defaults.dosage_form || "",
     }
+    if (draft.linkedItems.length > 1) openPicker.value = { key: draft.key, field: "drug_code" }
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn("Failed to apply medication defaults", error)

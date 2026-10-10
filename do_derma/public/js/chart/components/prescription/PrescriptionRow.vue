@@ -21,19 +21,41 @@
       </button>
       <div
         v-if="openField === 'drug_code'"
-        :ref="setPickerHost"
-        class="picker-host"
+        class="item-chooser"
+        role="listbox"
+        data-test="prescription-item-chooser"
         @keydown.escape.stop="closePicker('drug_code')"
-      ></div>
-      <button
-        v-else-if="row.linkedItems.length > 1 && !readOnly"
-        type="button"
-        class="drug-code-link"
-        data-field="drug_code"
-        data-test="prescription-choose-item"
-        @click="emit('open-picker', 'drug_code')"
       >
-        {{ row.values.drug_code || __("Choose item") }}
+        <button
+          v-for="item in row.linkedItems"
+          :key="item.item_code"
+          type="button"
+          role="option"
+          class="item-option"
+          :class="{ 'is-out': item.actual_qty === 0 }"
+          :aria-selected="item.item_code === row.values.drug_code ? 'true' : 'false'"
+          data-test="prescription-item-option"
+          @click="chooseItem(item.item_code)"
+        >
+          <span>{{ item.item_name || item.item_code }}</span>
+          <small>{{ getStockLabel(item) }}</small>
+        </button>
+        <p v-if="!row.warehouse" class="chooser-hint">
+          {{ __("Set a Prescription Warehouse in Derma Settings to see stock.") }}
+        </p>
+        <button type="button" class="item-option is-other" data-test="prescription-item-other" @click="chooseOtherMedication">
+          {{ __("Choose another medication") }}
+        </button>
+      </div>
+      <button
+        v-else-if="!readOnly && row.values.medication && (row.values.drug_code || row.linkedItems.length > 1)"
+        type="button"
+        class="item-chip"
+        data-field="drug_code"
+        data-test="prescription-item-chip"
+        @click="emit('choose-item')"
+      >
+        {{ itemLabel }}
       </button>
       <small v-else-if="row.values.drug_code" class="drug-code">{{ row.values.drug_code }}</small>
       <small v-if="duplicateOf" class="duplicate-note" data-test="prescription-duplicate">
@@ -100,7 +122,6 @@ const __ = window.__ || ((text) => text)
 
 const LINK_OPTIONS = {
   medication: "Medication",
-  drug_code: "Item",
   dosage: "Prescription Dosage",
   period: "Prescription Duration",
 }
@@ -118,7 +139,7 @@ const props = defineProps({
   missing: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(["update", "open-picker", "close-picker", "remove"])
+const emit = defineEmits(["update", "open-picker", "close-picker", "choose-item", "remove"])
 
 // Older rows carry only a drug name or item code.
 const medicationLabel = computed(() => {
@@ -128,6 +149,16 @@ const medicationLabel = computed(() => {
   return __("Choose medication")
 })
 
+const selectedItem = computed(() =>
+  props.row.linkedItems.find((item) => item.item_code === props.row.values.drug_code)
+)
+
+const itemLabel = computed(() => {
+  if (!props.row.values.drug_code) return __("Choose item")
+  const item = selectedItem.value
+  return item ? `${item.item_name || item.item_code} · ${getStockLabel(item)}` : props.row.values.drug_code
+})
+
 const rowElement = ref(null)
 let pickerHost = null
 let control = null
@@ -135,7 +166,7 @@ let control = null
 watch(
   () => props.openField,
   async (field) => {
-    if (!field) return
+    if (!field || field === "drug_code") return
     await nextTick()
     mountPicker(field)
   },
@@ -157,7 +188,6 @@ function mountPicker(field) {
       options: LINK_OPTIONS[field],
       placeholder: __(LINK_OPTIONS[field]),
       only_select: 1,
-      get_query: field === "drug_code" ? () => ({ filters: { name: ["in", props.row.linkedItems] } }) : undefined,
       change: () => {
         emit("update", field, control.get_value() || "")
         closePicker(field)
@@ -179,6 +209,22 @@ async function commitPicker() {
 }
 
 defineExpose({ commitPicker })
+
+function getStockLabel(item) {
+  if (item.actual_qty == null) return "—"
+  if (item.actual_qty === 0) return __("0 in stock")
+  return `${item.actual_qty} ${item.stock_uom || ""}`.trim()
+}
+
+function chooseItem(itemCode) {
+  emit("update", "drug_code", itemCode)
+  closePicker("drug_code")
+}
+
+function chooseOtherMedication() {
+  emit("update", "medication", "")
+  emit("open-picker", "medication")
+}
 
 function closePicker(field) {
   emit("close-picker")
@@ -244,21 +290,72 @@ function closePicker(field) {
   cursor: text;
 }
 
-.drug-code,
-.drug-code-link {
+.drug-code {
   display: block;
   margin-top: 3px;
   color: var(--chart-muted);
   font-size: 12px;
 }
 
-.drug-code-link {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--chart-accent-strong);
-  text-decoration: underline dotted;
+.item-chip {
+  display: block;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--chart-border);
+  border-radius: 999px;
+  background: var(--chart-surface-muted);
+  color: var(--chart-text-soft);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
+}
+
+.item-chooser {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 4px;
+  border: 1px solid var(--chart-border);
+  border-radius: 8px;
+  background: var(--chart-surface);
+}
+
+.item-option {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--chart-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.item-option:hover,
+.item-option:focus-visible {
+  background: var(--chart-surface-muted);
+  outline: none;
+}
+
+.item-option.is-out {
+  color: var(--chart-muted);
+}
+
+.item-option.is-other {
+  color: var(--chart-accent);
+}
+
+.chooser-hint {
+  margin: 2px 8px;
+  color: var(--chart-muted);
+  font-size: 12px;
 }
 
 .duplicate-note {

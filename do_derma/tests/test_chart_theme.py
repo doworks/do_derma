@@ -875,7 +875,7 @@ class TestPrescriptionRow(TestCase):
 	def test_pickers_keep_escape_from_desk(self):
 		template, _, _ = get_component_parts(PRESCRIPTION_ROW)
 		hosts = re.findall(r'<div[^>]*class="picker-host"[^>]*>', template)
-		self.assertEqual(len(hosts), 3)
+		self.assertEqual(len(hosts), 2)
 		for host in hosts:
 			self.assertIn("@keydown.escape.stop", host)
 
@@ -894,12 +894,26 @@ class TestPrescriptionRow(TestCase):
 		self.assertRegex(style, r"\.cell-input:disabled \{[^}]*color: var\(--chart-text\)")
 		self.assertRegex(style, r"\.cell-input:disabled \{[^}]*opacity: 1;")
 
-	def test_drug_code_sits_under_the_medication(self):
-		template, _, _ = get_component_parts(PRESCRIPTION_ROW)
+	def test_the_linked_item_is_a_chip_that_opens_the_chooser(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_ROW)
 		medication = get_element(template, '<td class="medication-cell"')
-		self.assertIn('data-test="prescription-choose-item"', medication)
-		self.assertIn("row.linkedItems.length > 1", medication)
+		self.assertIn('data-test="prescription-item-chip"', medication)
+		self.assertIn("emit('choose-item')", medication)
 		self.assertIn('class="chart-spinner"', medication)
+		self.assertNotIn("props.row.linkedItems] } }", script)
+		self.assertNotIn('drug_code: "Item"', script)
+
+	def test_the_chooser_lists_stock_and_an_alternative(self):
+		template, script, style = get_component_parts(PRESCRIPTION_ROW)
+		chooser = get_element(template, '<div\n        v-if="openField === \'drug_code\'"')
+		self.assertIn('data-test="prescription-item-option"', chooser)
+		self.assertIn('data-test="prescription-item-other"', chooser)
+		self.assertIn('__("Choose another medication")', chooser)
+		self.assertIn("@keydown.escape.stop", chooser)
+		self.assertIn("'is-out': item.actual_qty === 0", chooser)
+		self.assertIn('__("0 in stock")', script)
+		self.assertIn('__("Set a Prescription Warehouse in Derma Settings to see stock.")', template)
+		self.assertIn(".item-option.is-out", style)
 
 	def test_notes_are_an_always_visible_column(self):
 		template, script, style = get_component_parts(PRESCRIPTION_ROW)
@@ -1146,6 +1160,16 @@ class TestPrescriptionPanelRestyle(TestCase):
 		submit = chart.split("async function submitPrescriptionPanel", 1)[1].split("\n}", 1)[0]
 		self.assertIn('"do_derma.api.submit_derma_prescriptions"', submit)
 		self.assertIn("applyPrescriptionResponse(response.message)", submit)
+
+	def test_items_come_from_the_stock_endpoint(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('"do_derma.api.get_medication_items"', script)
+		self.assertNotIn("patient_encounter.get_medications", script)
+		apply = script.split("async function applyMedication", 1)[1].split("\n}", 1)[0]
+		self.assertIn("draft.linkedItems.length > 1", apply)
+		self.assertIn('openPicker.value = { key: draft.key, field: "drug_code" }', apply)
+		repeat = script.split("function repeatRow(row)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("refreshLinkedItem(draft)", repeat)
 
 	def test_print_sits_before_save_and_needs_saved_rows(self):
 		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
