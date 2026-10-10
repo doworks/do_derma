@@ -879,6 +879,14 @@ class TestPrescriptionRow(TestCase):
 		for host in hosts:
 			self.assertIn("@keydown.escape.stop", host)
 
+	def test_pickers_fetch_fifty_results(self):
+		"""Desk's Link control reads the site-wide limit; only the Rx pickers ask for more."""
+		_, script, _ = get_component_parts(PRESCRIPTION_ROW)
+		self.assertIn("const PICKER_PAGE_LENGTH = 50", script)
+		self.assertIn("page_length: PICKER_PAGE_LENGTH", script)
+		self.assertIn("control.get_search_args = ", script)
+		self.assertNotIn("link_field_results_limit", script)
+
 	def test_a_picker_starts_from_the_cell_value_so_clearing_counts(self):
 		"""Desk's Link blur compares against `last_value`; an unseeded control never reports a clear."""
 		_, script, _ = get_component_parts(PRESCRIPTION_ROW)

@@ -125,6 +125,7 @@ const LINK_OPTIONS = {
   dosage: "Prescription Dosage",
   period: "Prescription Duration",
 }
+const PICKER_PAGE_LENGTH = 50
 const LINK_COLUMNS = [
   { field: "dosage", placeholder: __("Dosage") },
   { field: "period", placeholder: __("Duration") },
@@ -195,6 +196,11 @@ function mountPicker(field) {
     },
     render_input: true,
   })
+  const getSearchArgs = control.get_search_args.bind(control)
+  control.get_search_args = (text) => {
+    const args = getSearchArgs(text)
+    return args && { ...args, page_length: PICKER_PAGE_LENGTH }
+  }
   // Seeded without firing `change`; desk's blur only reports values that differ from `last_value`.
   const current = props.row.values[field] || ""
   control.set_input(current)
