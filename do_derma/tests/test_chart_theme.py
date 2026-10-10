@@ -1093,6 +1093,38 @@ class TestPrescriptionPanelRestyle(TestCase):
 		save = chart.split("async function savePrescriptionPanel", 1)[1].split("\n}", 1)[0]
 		self.assertNotIn("previous", save)
 
+	def test_the_diagnosis_field_copies_from_the_assessment(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		field = get_element(template, '<div v-if="hasEncounter && !loading" class="diagnosis-field"')
+		self.assertIn('data-test="prescription-diagnosis"', field)
+		self.assertIn('data-test="prescription-copy-diagnosis"', field)
+		self.assertIn('__("Copy from assessment")', field)
+		self.assertIn('savedDiagnosis: { type: String, default: "" }', script)
+		self.assertIn('assessmentDiagnosis: { type: String, default: "" }', script)
+		reset = script.split("function resetDrafts()", 1)[1].split("\n}", 1)[0]
+		self.assertIn('props.savedDiagnosis || (canEdit.value ? props.assessmentDiagnosis : "")', reset)
+
+	def test_a_copied_diagnosis_is_not_unsaved_until_something_is_prescribed(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		dirty = script.split("const isDiagnosisDirty", 1)[1].split("})", 1)[0]
+		self.assertIn("rowCount.value > 0", dirty)
+		self.assertIn("diagnosis.value !== seededDiagnosis.value", dirty)
+		self.assertIn("|| isDiagnosisDirty.value", script)
+
+	def test_the_save_payload_carries_the_diagnosis(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn("return { rows: getPayload(), diagnosis: diagnosis.value }", script)
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		save = chart.split("async function savePrescriptionPanel", 1)[1].split("\n}", 1)[0]
+		self.assertIn("payload: payload.rows, diagnosis: payload.diagnosis", save)
+		self.assertIn(':saved-diagnosis="prescriptionPanel.diagnosis"', chart)
+		self.assertIn(':assessment-diagnosis="prescriptionPanel.assessmentDiagnosis"', chart)
+
+	def test_an_assessment_save_refreshes_the_offered_diagnosis(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		save = chart.split("async function saveAssessment", 1)[1].split("\n}", 1)[0]
+		self.assertIn("if (loadedTabs.prescriptions) loadPrescriptionPanel(true)", save)
+
 	def test_print_sits_before_save_and_needs_saved_rows(self):
 		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
 		header = get_element(template, '<Teleport defer to="#chart-section-actions">')

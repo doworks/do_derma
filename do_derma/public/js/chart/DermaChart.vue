@@ -303,6 +303,8 @@
             :encounter-name="prescriptionPanel.encounter"
             :rows="prescriptionPanel.rows"
             :previous="prescriptionPanel.previous"
+            :saved-diagnosis="prescriptionPanel.diagnosis"
+            :assessment-diagnosis="prescriptionPanel.assessmentDiagnosis"
             :read-only="isEncounterLocked"
             @refresh="() => loadPrescriptionPanel(true)"
             ref="prescriptionPanelRef"
@@ -739,7 +741,16 @@ const assessmentPanel = reactive({
 const unsavedSections = reactive({ assessment: false, prescriptions: false })
 const assessmentPanelRef = ref(null)
 const prescriptionPanelRef = ref(null)
-const prescriptionPanel = reactive({ loading: false, saving: false, error: "", encounter: "", rows: [], previous: null })
+const prescriptionPanel = reactive({
+  loading: false,
+  saving: false,
+  error: "",
+  encounter: "",
+  rows: [],
+  previous: null,
+  diagnosis: "",
+  assessmentDiagnosis: "",
+})
 const anesthesiaPanel = reactive({ loading: false, saving: false, error: "", encounter: "", rows: [] })
 const consentPanel = reactive({
   open: false,
@@ -1108,9 +1119,9 @@ async function canLeaveSection() {
 
 async function saveSectionBeforeLeaving(section) {
   if (section === "prescriptions") {
-    const rows = await prescriptionPanelRef.value.getSavePayload()
-    if (!rows) return false
-    await savePrescriptionPanel(rows)
+    const payload = await prescriptionPanelRef.value.getSavePayload()
+    if (!payload) return false
+    await savePrescriptionPanel(payload)
     return !prescriptionPanel.error
   }
   await saveAssessment(assessmentPanelRef.value.getSavePayload())
@@ -2048,6 +2059,7 @@ async function saveAssessment({ payload, mode }) {
     })
     applyAssessmentResponse(response.message || {})
     frappe.show_alert({ message: __("Assessment saved"), indicator: "green" })
+    if (loadedTabs.prescriptions) loadPrescriptionPanel(true)
   } catch (error) {
     assessmentPanel.error = serverErrorText(error, __("The assessment could not be saved."))
     frappe.show_alert({ message: assessmentPanel.error, indicator: "red" })
@@ -2175,14 +2187,20 @@ async function setAssessmentMode(mode) {
   }
 }
 
+function applyPrescriptionResponse(message = {}) {
+  prescriptionPanel.encounter = message.encounter || encounter.value.name || ""
+  prescriptionPanel.diagnosis = message.diagnosis || ""
+  prescriptionPanel.assessmentDiagnosis = message.assessment_diagnosis || ""
+  prescriptionPanel.rows = message.drug_prescription || []
+}
+
 async function loadPrescriptionPanel(force = false) {
   if (!force && loadedTabs.prescriptions) return
   prescriptionPanel.loading = true
   prescriptionPanel.error = ""
   try {
     const response = await frappe.call({ method: "do_derma.api.get_derma_prescriptions", args: contextArgs() })
-    prescriptionPanel.encounter = response.message?.encounter || encounter.value.name || ""
-    prescriptionPanel.rows = response.message?.drug_prescription || []
+    applyPrescriptionResponse(response.message)
     prescriptionPanel.previous = response.message?.previous || null
     loadedTabs.prescriptions = true
   } catch (error) {
@@ -2192,13 +2210,15 @@ async function loadPrescriptionPanel(force = false) {
   }
 }
 
-async function savePrescriptionPanel(rows) {
+async function savePrescriptionPanel(payload) {
   prescriptionPanel.saving = true
   prescriptionPanel.error = ""
   try {
-    const response = await frappe.call({ method: "do_derma.api.set_derma_prescriptions", args: { ...contextArgs(), payload: rows } })
-    prescriptionPanel.encounter = response.message?.encounter || prescriptionPanel.encounter
-    prescriptionPanel.rows = response.message?.drug_prescription || []
+    const response = await frappe.call({
+      method: "do_derma.api.set_derma_prescriptions",
+      args: { ...contextArgs(), payload: payload.rows, diagnosis: payload.diagnosis },
+    })
+    applyPrescriptionResponse(response.message)
     frappe.show_alert({ message: __("Prescriptions saved"), indicator: "green" })
   } catch (error) {
     // A refused save must never look like a saved one: the row is not in the record.

@@ -34,6 +34,30 @@
 
     <p v-if="errorText" class="error-text" role="alert" data-test="prescription-error">{{ errorText }}</p>
 
+    <div v-if="hasEncounter && !loading" class="diagnosis-field">
+      <div class="diagnosis-head">
+        <label class="chart-label" for="prescription-diagnosis">{{ __("Diagnosis") }}</label>
+        <button
+          v-if="canEdit && assessmentDiagnosis"
+          type="button"
+          class="ghost small"
+          data-test="prescription-copy-diagnosis"
+          @click="diagnosis = assessmentDiagnosis"
+        >
+          {{ __("Copy from assessment") }}
+        </button>
+      </div>
+      <textarea
+        id="prescription-diagnosis"
+        v-model="diagnosis"
+        rows="2"
+        class="diagnosis-input"
+        data-test="prescription-diagnosis"
+        :disabled="!canEdit"
+        :placeholder="__('Printed on the prescription')"
+      ></textarea>
+    </div>
+
     <div v-if="loading" class="empty-state">{{ __("Loading prescriptions...") }}</div>
     <div v-else-if="!hasSessionContext" class="empty-state">
       {{ __("Prescriptions are visit-scoped. Select or start an appointment session first.") }}
@@ -136,6 +160,8 @@ const props = defineProps({
   encounterName: { type: String, default: "" },
   rows: { type: Array, default: () => [] },
   previous: { type: Object, default: null },
+  savedDiagnosis: { type: String, default: "" },
+  assessmentDiagnosis: { type: String, default: "" },
   readOnly: { type: Boolean, default: false },
 })
 
@@ -145,6 +171,8 @@ let nextKey = 0
 const rowComponents = {}
 const drafts = ref([])
 const snapshot = ref("")
+const diagnosis = ref("")
+const seededDiagnosis = ref("")
 const openPicker = ref(null)
 const showMissing = ref(false)
 
@@ -152,7 +180,12 @@ const canEdit = computed(() => props.hasSessionContext && props.hasEncounter && 
 const orderedRows = computed(() => (props.rows || []).filter((row) => row.medication_request))
 const rowCount = computed(() => orderedRows.value.length + getPayload().length)
 const hasSavedRows = computed(() => (props.rows || []).some((row) => row.medication))
-const isDirty = computed(() => JSON.stringify(getPayload()) !== snapshot.value)
+// A copied diagnosis needs saving only once the visit prescribes something, so a look at the tab stays clean.
+const isDiagnosisDirty = computed(() => {
+  if (diagnosis.value === props.savedDiagnosis) return false
+  return rowCount.value > 0 || Boolean(props.savedDiagnosis) || diagnosis.value !== seededDiagnosis.value
+})
+const isDirty = computed(() => JSON.stringify(getPayload()) !== snapshot.value || isDiagnosisDirty.value)
 
 const previousRows = computed(() => props.previous?.drug_prescription || [])
 const previousDate = computed(() => frappe.datetime.str_to_user(props.previous?.encounter_date))
@@ -208,6 +241,8 @@ function makeDraft(original = {}) {
 
 function resetDrafts() {
   drafts.value = (props.rows || []).filter((row) => !row.medication_request).map((row) => makeDraft(row))
+  seededDiagnosis.value = props.savedDiagnosis || (canEdit.value ? props.assessmentDiagnosis : "")
+  diagnosis.value = seededDiagnosis.value
   snapshot.value = JSON.stringify(getPayload())
   ensureTrailingDraft()
   openPicker.value = null
@@ -310,21 +345,21 @@ async function applyMedication(draft, medication) {
   }
 }
 
-/** The rows to save, or null when a required field is missing (the gap is shown). */
+/** The rows and diagnosis to save, or null when a required field is missing (the gap is shown). */
 async function getSavePayload() {
   await rowComponents[openPicker.value?.key]?.commitPicker()
   showMissing.value = true
   if (validationError.value) return null
   showMissing.value = false
-  return getPayload()
+  return { rows: getPayload(), diagnosis: diagnosis.value }
 }
 
 defineExpose({ getSavePayload })
 
 async function save() {
   if (!canEdit.value || props.saving || props.loading) return
-  const rows = await getSavePayload()
-  if (rows) emit("save", rows)
+  const payload = await getSavePayload()
+  if (payload) emit("save", payload)
 }
 </script>
 
@@ -333,6 +368,33 @@ async function save() {
   margin: 0 0 8px;
   color: var(--chart-danger-text);
   font-size: 12px;
+}
+
+.diagnosis-field {
+  margin-bottom: 12px;
+}
+
+.diagnosis-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.diagnosis-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--chart-border);
+  border-radius: 6px;
+  background: var(--chart-surface);
+  color: var(--chart-text);
+  font-size: 13px;
+  resize: vertical;
+}
+
+.diagnosis-input:focus {
+  border-color: var(--chart-accent);
+  outline: none;
 }
 
 .empty-state {
