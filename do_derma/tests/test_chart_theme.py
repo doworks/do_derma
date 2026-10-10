@@ -970,7 +970,7 @@ class TestPrescriptionPanelRestyle(TestCase):
 		template, _, _ = get_component_parts(PRESCRIPTION_PANEL)
 		header = get_element(template, '<Teleport defer to="#chart-section-actions">')
 		self.assertRegex(header, r'class="primary small"\s+data-test="prescription-save"')
-		self.assertEqual(header.count("<button"), 2)
+		self.assertEqual(header.count("<button"), 3)
 		self.assertNotIn("Add medication", template)
 		self.assertEqual(template.count("primary"), 1)
 
@@ -1124,6 +1124,28 @@ class TestPrescriptionPanelRestyle(TestCase):
 		chart = (CHART_DIR / "DermaChart.vue").read_text()
 		save = chart.split("async function saveAssessment", 1)[1].split("\n}", 1)[0]
 		self.assertIn("if (loadedTabs.prescriptions) loadPrescriptionPanel(true)", save)
+
+	def test_submit_needs_saved_unordered_rows_and_no_unsaved_changes(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		header = get_element(template, '<Teleport defer to="#chart-section-actions">')
+		start = header.index('data-test="prescription-submit"')
+		button = header[start : header.index(">", start)]
+		self.assertIn("isDirty", button)
+		self.assertIn("!unorderedCount", button)
+		self.assertLess(start, header.index('data-test="prescription-save"'))
+		self.assertIn(
+			"(props.rows || []).filter((row) => (row.medication || row.drug_code) && !row.medication_request)", script
+		)
+		submit = script.split("function submitPrescription()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("frappe.confirm(", submit)
+		self.assertIn('emit("submit")', submit)
+
+	def test_the_chart_orders_and_refreshes(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		self.assertIn('@submit="submitPrescriptionPanel"', chart)
+		submit = chart.split("async function submitPrescriptionPanel", 1)[1].split("\n}", 1)[0]
+		self.assertIn('"do_derma.api.submit_derma_prescriptions"', submit)
+		self.assertIn("applyPrescriptionResponse(response.message)", submit)
 
 	def test_print_sits_before_save_and_needs_saved_rows(self):
 		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)

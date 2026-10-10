@@ -309,6 +309,7 @@
             @refresh="() => loadPrescriptionPanel(true)"
             ref="prescriptionPanelRef"
             @save="savePrescriptionPanel"
+            @submit="submitPrescriptionPanel"
             @dirty="(value) => (unsavedSections.prescriptions = value)"
             @print="printDermaPage('prescription', prescriptionPanel.encounter)"
           />
@@ -2223,6 +2224,21 @@ async function savePrescriptionPanel(payload) {
   } catch (error) {
     // A refused save must never look like a saved one: the row is not in the record.
     prescriptionPanel.error = serverErrorText(error, __("Prescriptions could not be saved."))
+    frappe.show_alert({ message: prescriptionPanel.error, indicator: "red" })
+  } finally {
+    prescriptionPanel.saving = false
+  }
+}
+
+async function submitPrescriptionPanel() {
+  prescriptionPanel.saving = true
+  prescriptionPanel.error = ""
+  try {
+    const response = await frappe.call({ method: "do_derma.api.submit_derma_prescriptions", args: contextArgs() })
+    applyPrescriptionResponse(response.message)
+    frappe.show_alert({ message: __("Prescription ordered"), indicator: "green" })
+  } catch (error) {
+    prescriptionPanel.error = serverErrorText(error, __("The prescription could not be ordered."))
     frappe.show_alert({ message: prescriptionPanel.error, indicator: "red" })
   } finally {
     prescriptionPanel.saving = false

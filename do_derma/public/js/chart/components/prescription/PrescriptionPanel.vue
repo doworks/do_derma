@@ -20,6 +20,17 @@
       </button>
       <template v-if="canEdit">
         <button
+          v-if="hasSavedRows"
+          type="button"
+          class="ghost small"
+          data-test="prescription-submit"
+          :disabled="loading || saving || isDirty || !unorderedCount"
+          :title="isDirty ? __('Save first, then submit') : ''"
+          @click="submitPrescription"
+        >
+          {{ __("Submit Rx") }}
+        </button>
+        <button
           type="button"
           class="primary small"
           data-test="prescription-save"
@@ -165,7 +176,7 @@ const props = defineProps({
   readOnly: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(["save", "dirty", "print"])
+const emit = defineEmits(["save", "dirty", "print", "submit"])
 
 let nextKey = 0
 const rowComponents = {}
@@ -180,6 +191,9 @@ const canEdit = computed(() => props.hasSessionContext && props.hasEncounter && 
 const orderedRows = computed(() => (props.rows || []).filter((row) => row.medication_request))
 const rowCount = computed(() => orderedRows.value.length + getPayload().length)
 const hasSavedRows = computed(() => (props.rows || []).some((row) => row.medication))
+const unorderedCount = computed(
+  () => (props.rows || []).filter((row) => (row.medication || row.drug_code) && !row.medication_request).length
+)
 // A copied diagnosis needs saving only once the visit prescribes something, so a look at the tab stays clean.
 const isDiagnosisDirty = computed(() => {
   if (diagnosis.value === props.savedDiagnosis) return false
@@ -292,6 +306,14 @@ function printPrescription() {
     return
   }
   emit("print")
+}
+
+function submitPrescription() {
+  if (isDirty.value || !unorderedCount.value) return
+  frappe.confirm(
+    __("Order {0} medications? Ordered rows can't be edited here.").replace("{0}", unorderedCount.value),
+    () => emit("submit")
+  )
 }
 
 function removeRow(draft) {
