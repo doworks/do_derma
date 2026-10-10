@@ -319,17 +319,22 @@ class TestSubmitPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 			api.submit_derma_prescriptions(encounter="does-not-matter")
 
 
-class TestMedicationItems(PrescriptionHelpers, IntegrationTestCase):
-	"""The Rx tab's item chooser: a medication's linked items with stock in the pharmacy warehouse."""
+class MedicationItemHelpers(PrescriptionHelpers):
+	"""Medications, stock items and pharmacy stock for the Rx tab's medication and item pickers."""
 
 	def setUp(self):
 		super().setUp()
+		self.token = frappe.generate_hash(length=8)
 		self.warehouse = frappe.db.get_value("Warehouse", {"is_group": 0}, "name")
-		self.medication = (
+		self.medication = self._make_medication(f"DermaMed{self.token}")
+		self._set_warehouse(self.warehouse)
+
+	def _make_medication(self, name):
+		return (
 			frappe.get_doc(
 				{
 					"doctype": "Medication",
-					"generic_name": f"DermaMed{frappe.generate_hash(length=8)}",
+					"generic_name": name,
 					"dosage_form": frappe.db.get_value("Dosage Form", {}, "name"),
 				}
 			)
@@ -341,40 +346,48 @@ class TestMedicationItems(PrescriptionHelpers, IntegrationTestCase):
 		frappe.db.set_single_value("Derma Settings", "prescription_warehouse", warehouse)
 		frappe.clear_document_cache("Derma Settings", "Derma Settings")
 
-	def _link_item(self, actual_qty=None, disabled=0):
-		token = frappe.generate_hash(length=8)
+	def _make_item(self, item_name=None, actual_qty=None, disabled=0, is_stock_item=1):
+		item_name = item_name or f"Derma Rx {frappe.generate_hash(length=8)}"
 		item_code = (
 			frappe.get_doc(
 				{
 					"doctype": "Item",
-					"item_code": f"DermaRx{token}",
-					"item_name": f"Derma Rx {token}",
+					"item_code": item_name,
+					"item_name": item_name,
 					"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
 					"stock_uom": "Nos",
-					"is_stock_item": 1,
+					"is_stock_item": is_stock_item,
 					"disabled": disabled,
 				}
 			)
 			.insert(ignore_permissions=True)
 			.name
 		)
-		parent = frappe.get_doc("Medication", self.medication)
-		frappe.get_doc(
-			{
-				"doctype": "Medication Linked Item",
-				"parent": self.medication,
-				"parenttype": "Medication",
-				"parentfield": "linked_items",
-				"idx": len(parent.linked_items) + 1,
-				"item": item_code,
-				"item_code": item_code,
-			}
-		).db_insert()
 		if actual_qty is not None:
 			frappe.get_doc(
 				{"doctype": "Bin", "item_code": item_code, "warehouse": self.warehouse, "actual_qty": actual_qty}
 			).insert(ignore_permissions=True)
 		return item_code
+
+	def _link_item(self, actual_qty=None, disabled=0, item_name=None, medication=None):
+		medication = medication or self.medication
+		item_code = self._make_item(item_name, actual_qty=actual_qty, disabled=disabled)
+		frappe.get_doc(
+			{
+				"doctype": "Medication Linked Item",
+				"parent": medication,
+				"parenttype": "Medication",
+				"parentfield": "linked_items",
+				"idx": len(frappe.get_doc("Medication", medication).linked_items) + 1,
+				"item": item_code,
+				"item_code": item_code,
+			}
+		).db_insert()
+		return item_code
+
+
+class TestMedicationItems(MedicationItemHelpers, IntegrationTestCase):
+	"""The Rx tab's item chooser: a medication's linked items with stock in the pharmacy warehouse."""
 
 	def test_items_carry_stock_in_the_prescription_warehouse(self):
 		self._set_warehouse(self.warehouse)
@@ -403,6 +416,109 @@ class TestMedicationItems(PrescriptionHelpers, IntegrationTestCase):
 		frappe.set_user(self._make_limited_user())
 		with self.assertRaises(frappe.PermissionError):
 			api.get_medication_items(self.medication)
+
+
+class TestSuggestedItems(MedicationItemHelpers, IntegrationTestCase):
+	"""Without Linked Items, stock items named like the medication are suggested, never saved."""
+
+	def setUp(self):
+		super().setUp()
+		self.brand = f"Dermabrand{self.token}"
+		self.medication = self._make_medication(f"{self.brand} 20mg Capsules [Oral]")
+
+	def _codes(self, medication=None):
+		items = api.get_medication_items(medication or self.medication)["items"]
+		return [(row["item_code"], row["is_suggested"]) for row in items]
+
+	def test_items_sharing_the_brand_are_suggested_best_match_first(self):
+		medication = self._make_medication(f"{self.brand} Forte 20mg Capsules [Oral]")
+		partial = self._make_item(f"{self.brand.upper()} FORTE 10MG", actual_qty=4)
+		best = self._make_item(f"{self.brand.upper()} FORTE 20MG CAPS 30")
+		self.assertEqual(self._codes(medication), [(best, True), (partial, True)])
+		self.assertEqual(frappe.get_doc("Medication", medication).linked_items, [])
+
+	def test_a_brand_only_or_form_only_match_is_noise(self):
+		"""A maker's brand spans many products; sharing only it, or only "cream", names another product."""
+		self._make_item(f"{self.brand.upper()} NEOTONE EYES")
+		self._make_item(f"{self.brand.upper()} NEOTONE CAPSULES")
+		self.assertEqual(self._codes(), [])
+
+	def test_a_one_word_medication_matches_on_its_brand(self):
+		medication = self._make_medication(f"{self.brand}one")
+		item = self._make_item(f"{self.brand.upper()}ONE 100MG TABS")
+		self.assertEqual(self._codes(medication), [(item, True)])
+
+	def test_disabled_and_non_stock_items_are_never_suggested(self):
+		self._make_item(f"{self.brand} disabled", disabled=1)
+		self._make_item(f"{self.brand} service", is_stock_item=0)
+		self.assertEqual(self._codes(), [])
+
+	def test_linked_items_replace_suggestions(self):
+		self._make_item(f"{self.brand} 20MG CAPS 30")
+		linked = self._link_item(medication=self.medication)
+		self.assertEqual(self._codes(), [(linked, False)])
+
+	def test_a_short_first_word_suggests_nothing(self):
+		medication = self._make_medication(f"Vi {self.token}")
+		self._make_item(f"Vi {self.token} drops")
+		self.assertEqual(self._codes(medication), [])
+
+
+class TestMedicationSearch(MedicationItemHelpers, IntegrationTestCase):
+	"""The Rx medication picker: this doctor's habits first, then the clinic's, then the name."""
+
+	def setUp(self):
+		super().setUp()
+		self.doctor = f"DermaDoc{self.token}"
+		self.patient = self._make_patient()
+
+	def _prescribe(self, medication, times, practitioner):
+		for _ in range(times):
+			encounter = self._make_encounter(self.patient)
+			api.set_derma_prescriptions(payload=json.dumps([self._row(medication=medication)]), encounter=encounter.name)
+			frappe.db.set_value("Patient Encounter", encounter.name, "practitioner", practitioner)
+
+	def _search(self, txt):
+		encounter = self._make_encounter(self.patient)
+		frappe.db.set_value("Patient Encounter", encounter.name, "practitioner", self.doctor)
+		result = api.search_prescription_medications(txt=txt, encounter=encounter.name)
+		self.assertEqual(result["warehouse"], self.warehouse)
+		return result["results"]
+
+	def test_the_doctor_beats_the_clinic_which_beats_the_name(self):
+		name_only = self._make_medication(f"Dermarank{self.token} A")
+		clinic = self._make_medication(f"Dermarank{self.token} B")
+		doctor = self._make_medication(f"Dermarank{self.token} C")
+		self._prescribe(clinic, 3, f"DermaOther{self.token}")
+		self._prescribe(doctor, 1, self.doctor)
+		results = self._search(f"dermarank{self.token}")
+		self.assertEqual([row["medication"] for row in results], [doctor, clinic, name_only])
+		self.assertEqual([row["doctor_uses"] for row in results], [1, 0, 0])
+
+	def test_an_empty_search_opens_on_the_doctors_favourites(self):
+		favourite = self._make_medication(f"Dermafav{self.token}")
+		self._prescribe(favourite, 2, self.doctor)
+		results = self._search("")
+		self.assertEqual(results[0]["medication"], favourite)
+		self.assertLessEqual(len(results), 15)
+
+	def test_results_carry_at_most_three_items_stocked_first(self):
+		for _ in range(3):
+			self._link_item(actual_qty=0)
+		stocked = self._link_item(actual_qty=5)
+		results = self._search(self.medication)
+		items = results[0]["items"]
+		self.assertEqual(len(items), 3)
+		self.assertEqual(items[0]["item_code"], stocked)
+
+	def test_disabled_medications_are_not_offered(self):
+		frappe.db.set_value("Medication", self.medication, "disabled", 1)
+		self.assertEqual(self._search(self.medication), [])
+
+	def test_is_gated(self):
+		frappe.set_user(self._make_limited_user())
+		with self.assertRaises(frappe.PermissionError):
+			api.search_prescription_medications(txt="any")
 
 
 class TestConsentPreview(DermaTestHelpers, IntegrationTestCase):

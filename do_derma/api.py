@@ -24,6 +24,7 @@ from do_derma.config.marker_size import (
 )
 from do_derma.consumables import marks as consumable_marks
 from do_derma.consumables import procedures as consumable_procedures
+from do_derma.prescriptions import medications
 from do_derma.printing import pages
 from do_derma.schema import COMPLETION_OVERRIDE_FIELD, PRESCRIPTION_DIAGNOSIS_FIELD
 from do_derma.settings import (
@@ -3426,32 +3427,19 @@ def submit_derma_prescriptions(encounter=None, appointment=None, patient=None):
 
 @frappe.whitelist()
 def get_medication_items(medication: str) -> dict[str, Any]:
-	"""The medication's enabled linked items with their stock in the prescription warehouse."""
+	"""The medication's items with their stock in the prescription warehouse."""
 	_ensure_clinical_access()
 	warehouse = get_prescription_warehouse()
-	item_codes = frappe.get_all(
-		"Medication Linked Item",
-		filters={"parent": medication, "parenttype": "Medication"},
-		pluck="item",
-		order_by="idx asc",
-	)
-	items = []
-	for item_code in filter(None, item_codes):
-		item = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom", "disabled"], as_dict=True)
-		if not item or item.disabled:
-			continue
-		stock = None
-		if warehouse:
-			stock = flt(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty"))
-		items.append(
-			{
-				"item_code": item_code,
-				"item_name": item.item_name,
-				"stock_uom": item.stock_uom,
-				"actual_qty": stock,
-			}
-		)
-	return {"warehouse": warehouse or "", "items": items}
+	return {"warehouse": warehouse or "", "items": medications.get_items(medication, warehouse)}
+
+
+@frappe.whitelist()
+def search_prescription_medications(txt: str = "", encounter: str | None = None) -> dict[str, Any]:
+	"""The Rx medication picker's results, ranked for the encounter's practitioner."""
+	_ensure_clinical_access()
+	practitioner = frappe.db.get_value("Patient Encounter", encounter, "practitioner") if encounter else None
+	warehouse = get_prescription_warehouse()
+	return {"warehouse": warehouse or "", "results": medications.search(txt or "", practitioner, warehouse)}
 
 
 @frappe.whitelist()
