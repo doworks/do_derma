@@ -67,34 +67,17 @@
     </td>
     <td>
       <input
-        type="number"
-        min="0"
-        step="1"
-        class="cell-input repeats-input"
-        data-test="prescription-repeats"
-        :value="row.values.number_of_repeats_allowed"
+        type="text"
+        class="cell-input notes-input"
+        data-test="prescription-notes"
+        :value="row.values.comment"
         :disabled="readOnly"
-        :aria-label="__('Repeats')"
-        @input="emit('update', 'number_of_repeats_allowed', $event.target.value)"
+        :placeholder="readOnly ? '' : __('Notes')"
+        :aria-label="__('Notes')"
+        @input="emit('update', 'comment', $event.target.value)"
       />
     </td>
     <td class="row-actions">
-      <button
-        v-if="!isNext && (!readOnly || row.values.comment)"
-        type="button"
-        class="icon-btn"
-        data-test="prescription-comment"
-        :aria-label="__('Comment')"
-        :aria-expanded="commentOpen ? 'true' : 'false'"
-        @click="hidePreview(); emit('toggle-comment')"
-        @mouseenter="showPreview"
-        @focus="showPreview"
-        @mouseleave="hidePreview"
-        @blur="hidePreview"
-      >
-        <i class="fa-regular fa-comment"></i>
-        <span v-if="row.values.comment" class="note-dot"></span>
-      </button>
       <button
         v-if="!readOnly && !isNext"
         type="button"
@@ -106,29 +89,12 @@
       >
         <i class="fa-regular fa-trash-can"></i>
       </button>
-      <div v-if="preview" class="comment-preview" role="tooltip" :style="previewStyle">
-        <span class="chart-label">{{ __("Comment") }}</span>
-        <p>{{ preview.text }}</p>
-      </div>
-    </td>
-  </tr>
-  <tr v-if="commentOpen" class="comment-row">
-    <td colspan="6">
-      <textarea
-        class="comment-input"
-        rows="2"
-        data-test="prescription-comment-input"
-        :value="row.values.comment"
-        :disabled="readOnly"
-        :placeholder="__('Instructions for the patient or pharmacist')"
-        @input="emit('update', 'comment', $event.target.value)"
-      ></textarea>
     </td>
   </tr>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue"
+import { computed, nextTick, ref, watch } from "vue"
 
 const __ = window.__ || ((text) => text)
 
@@ -137,15 +103,11 @@ const LINK_OPTIONS = {
   drug_code: "Item",
   dosage: "Prescription Dosage",
   period: "Prescription Duration",
-  dosage_form: "Dosage Form",
 }
 const LINK_COLUMNS = [
   { field: "dosage", placeholder: __("Dosage") },
   { field: "period", placeholder: __("Duration") },
-  { field: "dosage_form", placeholder: __("Form") },
 ]
-const PREVIEW_DELAY_MS = 250
-const PREVIEW_GAP_PX = 8
 
 const props = defineProps({
   row: { type: Object, required: true },
@@ -153,11 +115,10 @@ const props = defineProps({
   isNext: { type: Boolean, default: false },
   duplicateOf: { type: Number, default: 0 },
   openField: { type: String, default: "" },
-  commentOpen: { type: Boolean, default: false },
   missing: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(["update", "open-picker", "close-picker", "toggle-comment", "remove"])
+const emit = defineEmits(["update", "open-picker", "close-picker", "remove"])
 
 // Older rows carry only a drug name or item code.
 const medicationLabel = computed(() => {
@@ -168,10 +129,8 @@ const medicationLabel = computed(() => {
 })
 
 const rowElement = ref(null)
-const preview = ref(null)
 let pickerHost = null
 let control = null
-let previewTimer = null
 
 watch(
   () => props.openField,
@@ -182,8 +141,6 @@ watch(
   },
   { immediate: true }
 )
-
-onBeforeUnmount(hidePreview)
 
 function setPickerHost(element) {
   pickerHost = element || null
@@ -228,36 +185,8 @@ function closePicker(field) {
   nextTick(() => rowElement.value?.querySelector(`[data-field="${field}"]`)?.focus())
 }
 
-function showPreview(event) {
-  const text = props.row.values.comment
-  if (!text || props.commentOpen) return
-  const anchor = event.currentTarget.getBoundingClientRect()
-  clearTimeout(previewTimer)
-  previewTimer = setTimeout(
-    () => {
-      preview.value = { text, anchor }
-    },
-    event.type === "focus" ? 0 : PREVIEW_DELAY_MS
-  )
-}
 
-function hidePreview() {
-  clearTimeout(previewTimer)
-  preview.value = null
-}
 
-// Opens to the left of the icon, and upward in the lower half so it never runs off the window.
-const previewStyle = computed(() => {
-  const anchor = preview.value?.anchor
-  if (!anchor) return {}
-  const style = { right: `${window.innerWidth - anchor.left + PREVIEW_GAP_PX}px` }
-  if (anchor.top > window.innerHeight / 2) {
-    style.bottom = `${window.innerHeight - anchor.bottom}px`
-  } else {
-    style.top = `${anchor.top}px`
-  }
-  return style
-})
 </script>
 
 <style scoped>
@@ -311,7 +240,7 @@ const previewStyle = computed(() => {
   font-weight: 600;
 }
 
-.repeats-input {
+.notes-input {
   cursor: text;
 }
 
@@ -364,7 +293,6 @@ const previewStyle = computed(() => {
 }
 
 .icon-btn {
-  position: relative;
   width: 28px;
   height: 28px;
   border: 0;
@@ -385,55 +313,5 @@ const previewStyle = computed(() => {
 .icon-btn.danger:focus-visible {
   background: var(--chart-danger-soft);
   color: var(--chart-danger-text);
-}
-
-.note-dot {
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--chart-ok);
-}
-
-/* Fixed: a positioned cell ancestor must not clip it. */
-.comment-preview {
-  position: fixed;
-  z-index: 1050;
-  width: min(320px, calc(100vw - 32px));
-  padding: 10px 12px;
-  border: 1px solid var(--chart-border);
-  border-radius: 10px;
-  background: var(--chart-surface);
-  box-shadow: var(--chart-shadow);
-  text-align: left;
-  white-space: normal;
-  pointer-events: none;
-}
-
-.comment-preview p {
-  margin: 4px 0 0;
-  color: var(--chart-text);
-  font-size: 13px;
-  line-height: 1.45;
-  white-space: pre-line;
-}
-
-.comment-input {
-  width: 100%;
-  min-height: 56px;
-  padding: 6px 8px;
-  border: 1px solid var(--chart-border);
-  border-radius: 6px;
-  background: var(--chart-surface);
-  color: var(--chart-text);
-  font-size: 13px;
-  resize: vertical;
-}
-
-.comment-input:focus {
-  border-color: var(--chart-accent);
-  outline: none;
 }
 </style>

@@ -17,8 +17,7 @@ DRAWING_PARENTS = ("Patient Encounter", "Clinical Procedure")
 PRESCRIPTION_COLUMNS = (
 	("dosage", "Dosage"),
 	("period", "Duration"),
-	("dosage_form", "Form"),
-	("number_of_repeats_allowed", "Repeats"),
+	("comment", "Notes"),
 )
 CELL_STYLE = "padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top;"
 
@@ -154,10 +153,7 @@ def get_prescription_table(rows) -> str:
 	head = "".join(f'<th style="{CELL_STYLE}">{escape_html(heading)}</th>' for heading in headings)
 	lines = []
 	for index, row in enumerate(rows, start=1):
-		medication = f"<strong>{escape_html(row.medication)}</strong>"
-		if row.comment:
-			medication += f'<div style="font-style:italic;color:#475569;">{escape_html(row.comment)}</div>'
-		cells = [str(index), medication]
+		cells = [str(index), f"<strong>{escape_html(row.medication)}</strong>"]
 		cells += [escape_html(str(row.get(field) or "—")) for field, _label in PRESCRIPTION_COLUMNS]
 		lines.append("<tr>" + "".join(f'<td style="{CELL_STYLE}">{cell}</td>' for cell in cells) + "</tr>")
 	return (

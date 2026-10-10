@@ -110,6 +110,10 @@ class TestDermaPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		self.assertIn("Thin layer &lt;b&gt;at night&lt;/b&gt;", page["html"])
 		self.assertIn("Penicillin", page["html"])
 		self.assertIn(patient, page["html"])
+		self.assertIn(">Notes<", page["html"])
+		self.assertNotIn(">Form<", page["html"])
+		self.assertNotIn(">Repeats<", page["html"])
+		self.assertNotIn("font-style:italic", page["html"])
 
 	def test_a_visit_without_medications_has_nothing_to_print(self):
 		encounter = self._make_encounter(self._make_patient())

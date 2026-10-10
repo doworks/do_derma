@@ -47,8 +47,7 @@
         <col class="col-medication" />
         <col class="col-dosage" />
         <col class="col-duration" />
-        <col class="col-form" />
-        <col class="col-repeats" />
+        <col class="col-notes" />
         <col class="col-actions" />
       </colgroup>
       <thead>
@@ -56,8 +55,7 @@
           <th class="chart-label">{{ __("Medication") }}</th>
           <th class="chart-label">{{ __("Dosage") }}</th>
           <th class="chart-label">{{ __("Duration") }} <span class="required-mark">*</span></th>
-          <th class="chart-label">{{ __("Form") }}</th>
-          <th class="chart-label">{{ __("Repeats") }}</th>
+          <th class="chart-label">{{ __("Notes") }}</th>
           <th class="chart-label"><span class="sr-only">{{ __("Actions") }}</span></th>
         </tr>
       </thead>
@@ -69,8 +67,7 @@
           </td>
           <td>{{ row.dosage || "—" }}</td>
           <td>{{ row.period || "—" }}</td>
-          <td>{{ row.dosage_form || "—" }}</td>
-          <td>{{ row.number_of_repeats_allowed || "—" }}</td>
+          <td>{{ row.comment || "—" }}</td>
           <td class="ordered-cell">
             <span class="chart-pill" data-tone="ok" :title="row.medication_request">{{ __("Ordered") }}</span>
           </td>
@@ -84,12 +81,10 @@
           :is-next="isTrailing(draft)"
           :duplicate-of="duplicateOf[orderedRows.length + index]"
           :open-field="openPicker?.key === draft.key ? openPicker.field : ''"
-          :comment-open="openComment === draft.key"
           :missing="showMissing ? getRequiredGaps(draft) : []"
           @update="(field, value) => updateField(draft, field, value)"
           @open-picker="(field) => (openPicker = { key: draft.key, field })"
           @close-picker="openPicker = null"
-          @toggle-comment="openComment = openComment === draft.key ? null : draft.key"
           @remove="removeRow(draft)"
         />
       </tbody>
@@ -129,15 +124,7 @@ import PrescriptionRow from "./PrescriptionRow.vue"
 
 const __ = window.__ || ((text) => text)
 
-const VALUE_FIELDS = [
-  "medication",
-  "drug_code",
-  "dosage",
-  "period",
-  "dosage_form",
-  "number_of_repeats_allowed",
-  "comment",
-]
+const VALUE_FIELDS = ["medication", "drug_code", "dosage", "period", "dosage_form", "comment"]
 const REQUIRED_FIELDS = { medication: __("Medication"), period: __("Duration") }
 
 const props = defineProps({
@@ -159,7 +146,6 @@ const rowComponents = {}
 const drafts = ref([])
 const snapshot = ref("")
 const openPicker = ref(null)
-const openComment = ref(null)
 const showMissing = ref(false)
 
 const canEdit = computed(() => props.hasSessionContext && props.hasEncounter && !props.readOnly)
@@ -225,14 +211,11 @@ function resetDrafts() {
   snapshot.value = JSON.stringify(getPayload())
   ensureTrailingDraft()
   openPicker.value = null
-  openComment.value = null
   showMissing.value = false
 }
 
 function isBlank(draft) {
-  return VALUE_FIELDS.every(
-    (field) => !draft.values[field] || (field === "number_of_repeats_allowed" && !Number(draft.values[field]))
-  )
+  return VALUE_FIELDS.every((field) => !draft.values[field])
 }
 
 function getRequiredGaps(draft) {
@@ -279,7 +262,6 @@ function printPrescription() {
 function removeRow(draft) {
   drafts.value = drafts.value.filter((entry) => entry.key !== draft.key)
   if (openPicker.value?.key === draft.key) openPicker.value = null
-  if (openComment.value === draft.key) openComment.value = null
 }
 
 function updateField(draft, field, value) {
@@ -385,13 +367,12 @@ async function save() {
   width: 17%;
 }
 
-.col-duration,
-.col-form {
+.col-duration {
   width: 15%;
 }
 
-.col-repeats {
-  width: 10%;
+.col-notes {
+  width: 25%;
 }
 
 .col-actions {

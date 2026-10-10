@@ -901,13 +901,34 @@ class TestPrescriptionRow(TestCase):
 		self.assertIn("row.linkedItems.length > 1", medication)
 		self.assertIn('class="chart-spinner"', medication)
 
-	def test_comment_and_delete_live_in_the_actions_cluster(self):
-		template, _, _ = get_component_parts(PRESCRIPTION_ROW)
+	def test_notes_are_an_always_visible_column(self):
+		template, script, style = get_component_parts(PRESCRIPTION_ROW)
+		start = template.index('class="cell-input notes-input"')
+		notes = template[start : template.index("/>", start)]
+		self.assertIn('data-test="prescription-notes"', notes)
+		self.assertIn(':value="row.values.comment"', notes)
+		for gone in ("prescription-comment", "comment-preview", "comment-row", "note-dot", "toggle-comment"):
+			self.assertNotIn(gone, template + script + style)
 		actions = get_element(template, '<td class="row-actions"')
-		for hook in ("prescription-comment", "prescription-delete"):
-			self.assertIn(f'data-test="{hook}"', actions)
-		self.assertIn('class="comment-preview"', actions)
-		self.assertIn('data-test="prescription-comment-input"', template)
+		self.assertIn('data-test="prescription-delete"', actions)
+
+	def test_notes_update_only_on_input(self):
+		"""A stored comment with line breaks is left alone unless the doctor types in it."""
+		template, _, _ = get_component_parts(PRESCRIPTION_ROW)
+		start = template.index('class="cell-input notes-input"')
+		notes = template[start : template.index("/>", start)]
+		self.assertIn("@input=\"emit('update', 'comment', $event.target.value)\"", notes)
+		self.assertNotIn("v-model", notes)
+
+	def test_form_and_repeats_are_gone(self):
+		row_template, row_script, _ = get_component_parts(PRESCRIPTION_ROW)
+		panel_template, panel_script, panel_style = get_component_parts(PRESCRIPTION_PANEL)
+		for text in ("number_of_repeats_allowed", "repeats-input", '__("Form")', '__("Repeats")'):
+			self.assertNotIn(text, row_template + row_script + panel_template + panel_script)
+		self.assertNotIn("col-form", panel_template + panel_style)
+		self.assertNotIn("row.dosage_form", panel_template)
+		self.assertIn('"dosage_form"', panel_script)
+		self.assertIn('__("Notes")', panel_template)
 
 	def test_delete_turns_red_only_on_hover(self):
 		_, _, style = get_component_parts(PRESCRIPTION_ROW)
@@ -922,7 +943,7 @@ PRESCRIPTION_HOOKS = (
 	"prescription-save",
 	"prescription-row",
 	"prescription-ordered-row",
-	"prescription-comment",
+	"prescription-notes",
 	"prescription-error",
 )
 
@@ -1030,7 +1051,6 @@ class TestPrescriptionPanelRestyle(TestCase):
 		template, script, style = get_component_parts(PRESCRIPTION_ROW)
 		self.assertIn("isNext: { type: Boolean, default: false }", script)
 		self.assertIn(":class=\"{ 'is-next': isNext }\"", template)
-		self.assertIn('v-if="!isNext && (!readOnly || row.values.comment)"', template)
 		self.assertIn('v-if="!readOnly && !isNext"', template)
 		self.assertIn(".prescription-row.is-next", style)
 		panel, _, _ = get_component_parts(PRESCRIPTION_PANEL)
