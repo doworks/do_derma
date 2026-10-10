@@ -25,7 +25,7 @@ from do_derma.config.marker_size import (
 from do_derma.consumables import marks as consumable_marks
 from do_derma.consumables import procedures as consumable_procedures
 from do_derma.printing import pages
-from do_derma.schema import COMPLETION_OVERRIDE_FIELD
+from do_derma.schema import COMPLETION_OVERRIDE_FIELD, PRESCRIPTION_DIAGNOSIS_FIELD
 from do_derma.settings import (
 	ENFORCEMENT_WARN,
 	FEATURE_TOGGLES,
@@ -2237,6 +2237,10 @@ def _drug_prescription_rows(encounter_doc) -> list[dict[str, Any]]:
 	return [_drug_prescription_row(row, allowed) for row in encounter_doc.get("drug_prescription") or []]
 
 
+def _get_assessment_diagnosis(encounter_doc) -> str:
+	return _join_unique(row.diagnosis for row in encounter_doc.get("diagnosis") or [])
+
+
 def _get_previous_prescriptions(encounter_doc) -> dict[str, Any] | None:
 	"""The patient's most recent other visit that prescribed a medication, for "Repeat from last visit"."""
 	if not _has_field("Patient Encounter", "drug_prescription"):
@@ -3372,11 +3376,13 @@ def get_derma_prescriptions(encounter=None, appointment=None, patient=None):
 		"encounter": encounter_doc.name if encounter_doc else encounter or "",
 		"drug_prescription": _drug_prescription_rows(encounter_doc) if encounter_doc else [],
 		"previous": _get_previous_prescriptions(encounter_doc) if encounter_doc else None,
+		"diagnosis": cstr(encounter_doc.get(PRESCRIPTION_DIAGNOSIS_FIELD)) if encounter_doc else "",
+		"assessment_diagnosis": _get_assessment_diagnosis(encounter_doc) if encounter_doc else "",
 	}
 
 
 @frappe.whitelist()
-def set_derma_prescriptions(payload=None, encounter=None, appointment=None, patient=None):
+def set_derma_prescriptions(payload=None, encounter=None, appointment=None, patient=None, diagnosis=None):
 	_ensure_clinical_access()
 	if not _has_field("Patient Encounter", "drug_prescription"):
 		return {"encounter": encounter or "", "drug_prescription": []}
@@ -3393,8 +3399,10 @@ def set_derma_prescriptions(payload=None, encounter=None, appointment=None, pati
 	prescriptions = [_drug_prescription_row(row, allowed) for row in rows if isinstance(row, dict)]
 	prescriptions = _merge_ordered_prescriptions(_drug_prescription_rows(encounter_doc), prescriptions)
 	encounter_doc.set("drug_prescription", prescriptions)
+	if diagnosis is not None and _has_field("Patient Encounter", PRESCRIPTION_DIAGNOSIS_FIELD):
+		encounter_doc.set(PRESCRIPTION_DIAGNOSIS_FIELD, cstr(diagnosis).strip())
 	encounter_doc.save(ignore_permissions=True)
-	return {"encounter": encounter_doc.name, "drug_prescription": _drug_prescription_rows(encounter_doc)}
+	return get_derma_prescriptions(encounter=encounter_doc.name)
 
 
 @frappe.whitelist()

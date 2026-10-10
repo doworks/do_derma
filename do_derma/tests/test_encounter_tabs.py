@@ -156,6 +156,49 @@ class TestDermaPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		)
 		self.assertEqual(saved["drug_prescription"][0]["number_of_repeats_allowed"], 500)
 
+	def _add_assessment_diagnosis(self, encounter, *names):
+		doc = frappe.get_doc("Patient Encounter", encounter.name)
+		for name in names:
+			if not frappe.db.exists("Diagnosis", name):
+				frappe.get_doc({"doctype": "Diagnosis", "diagnosis": name}).insert(ignore_permissions=True)
+			doc.append("diagnosis", {"diagnosis": name})
+		doc.save(ignore_permissions=True)
+
+	def test_the_assessment_diagnosis_is_offered_by_name(self):
+		encounter = self._make_encounter(self._make_patient())
+		self._add_assessment_diagnosis(encounter, "Derma Acne Test", "Derma Rosacea Test", "Derma Acne Test")
+		loaded = api.get_derma_prescriptions(encounter=encounter.name)
+		self.assertEqual(loaded["assessment_diagnosis"], "Derma Acne Test, Derma Rosacea Test")
+		self.assertEqual(loaded["diagnosis"], "")
+
+	def test_the_rx_diagnosis_saves_without_touching_the_assessment(self):
+		encounter = self._make_encounter(self._make_patient())
+		self._add_assessment_diagnosis(encounter, "Derma Acne Test")
+		saved = api.set_derma_prescriptions(
+			payload=json.dumps([self._row()]), encounter=encounter.name, diagnosis="Acne vulgaris, moderate"
+		)
+		self.assertEqual(saved["diagnosis"], "Acne vulgaris, moderate")
+		rows = frappe.get_all("Patient Encounter Diagnosis", {"parent": encounter.name}, pluck="diagnosis")
+		self.assertEqual(rows, ["Derma Acne Test"])
+
+	def test_a_save_without_a_diagnosis_keeps_the_stored_one(self):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name, diagnosis="Eczema")
+		saved = api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)
+		self.assertEqual(saved["diagnosis"], "Eczema")
+
+	def test_the_printout_names_the_rx_diagnosis_only_when_set(self):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)
+		self.assertNotIn(">Diagnosis:<", api.get_derma_print_html("prescription", encounter.name)["html"])
+		api.set_derma_prescriptions(
+			payload=json.dumps([self._row()]), encounter=encounter.name, diagnosis="Psoriasis & plaque"
+		)
+		html = api.get_derma_print_html("prescription", encounter.name)["html"]
+		self.assertIn(">Diagnosis:<", html)
+		self.assertIn("Psoriasis &amp; plaque", html)
+		self.assertLess(html.index(">Allergies:<"), html.index(">Diagnosis:<"))
+
 	def test_is_gated(self):
 		frappe.set_user(self._make_limited_user())
 		with self.assertRaises(frappe.PermissionError):

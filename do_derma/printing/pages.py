@@ -11,6 +11,7 @@ from do_derma.printing.letterhead import (
 	derma_letterhead_open,
 	derma_practitioner_mark,
 )
+from do_derma.schema import PRESCRIPTION_DIAGNOSIS_FIELD
 
 BODY_STYLE = "font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0 auto;color:#1a1a1a;line-height:1.4;padding:0 24px;"
 DRAWING_PARENTS = ("Patient Encounter", "Clinical Procedure")
@@ -131,6 +132,7 @@ def get_prescription_page(encounter: str) -> dict[str, str]:
 		f'<h3 style="margin:0 0 4px;">{escape_html(patient.patient_name)}</h3>'
 		+ identity
 		+ get_allergy_line(patient)
+		+ get_diagnosis_line(doc)
 		+ get_prescription_table(rows)
 	)
 	return get_page(" - ".join([patient.patient_name, _("Prescription")]), practitioner, body)
@@ -146,6 +148,14 @@ def get_allergy_line(patient) -> str:
 		colour = "#475569"
 	label = escape_html(_("Allergies"))
 	return f'<p style="margin:0 0 16px;font-size:13px;color:{colour};"><strong>{label}:</strong> {escape_html(text)}</p>'
+
+
+def get_diagnosis_line(doc) -> str:
+	text = (doc.get(PRESCRIPTION_DIAGNOSIS_FIELD) or "").strip()
+	if not text:
+		return ""
+	label = escape_html(_("Diagnosis"))
+	return f'<p style="margin:0 0 16px;font-size:13px;"><strong>{label}:</strong> {escape_html(text)}</p>'
 
 
 def get_prescription_table(rows) -> str:
