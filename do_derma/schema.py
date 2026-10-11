@@ -51,6 +51,7 @@ PATIENT_ADVICE_LANGUAGES = "Auto\nEnglish\nArabic\nBoth"  # Auto = the language 
 AI_DIAGNOSIS_FIELD = "custom_derma_ai_diagnosis"
 ICD10_FIELD = "custom_derma_icd10"
 NOTE_AR_FIELD = "custom_derma_note_ar"
+PRESCRIPTION_DIAGNOSIS_FIELD = "custom_derma_prescription_diagnosis"
 MODE_FIELD = "custom_derma_assessment_mode"
 PRACTITIONER_DEFAULT_FIELD = "custom_derma_default_assessment_mode"
 SIGNATURE_WAIVED_FIELD = "custom_derma_signature_waived"
@@ -244,6 +245,14 @@ DERMA_CUSTOM_FIELDS: dict[str, list[dict[str, Any]]] = {
 			"insert_after": ICD10_FIELD,
 			"no_copy": 1,
 			"description": "Arabic version of the note drafted by the voice scribe.",
+		},
+		{
+			"fieldname": PRESCRIPTION_DIAGNOSIS_FIELD,
+			"fieldtype": "Small Text",
+			"label": "Prescription Diagnosis",
+			"insert_after": NOTE_AR_FIELD,
+			"no_copy": 1,
+			"description": "Printed on the prescription. Starts as a copy of the assessment's diagnosis.",
 		},
 	],
 	# do_health owns this child table; do_derma adds the column that carries the badge legend

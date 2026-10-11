@@ -11,14 +11,14 @@ from do_derma.printing.letterhead import (
 	derma_letterhead_open,
 	derma_practitioner_mark,
 )
+from do_derma.schema import PRESCRIPTION_DIAGNOSIS_FIELD
 
 BODY_STYLE = "font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0 auto;color:#1a1a1a;line-height:1.4;padding:0 24px;"
 DRAWING_PARENTS = ("Patient Encounter", "Clinical Procedure")
 PRESCRIPTION_COLUMNS = (
 	("dosage", "Dosage"),
 	("period", "Duration"),
-	("dosage_form", "Form"),
-	("number_of_repeats_allowed", "Repeats"),
+	("comment", "Notes"),
 )
 CELL_STYLE = "padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top;"
 
@@ -132,6 +132,7 @@ def get_prescription_page(encounter: str) -> dict[str, str]:
 		f'<h3 style="margin:0 0 4px;">{escape_html(patient.patient_name)}</h3>'
 		+ identity
 		+ get_allergy_line(patient)
+		+ get_diagnosis_line(doc)
 		+ get_prescription_table(rows)
 	)
 	return get_page(" - ".join([patient.patient_name, _("Prescription")]), practitioner, body)
@@ -149,15 +150,20 @@ def get_allergy_line(patient) -> str:
 	return f'<p style="margin:0 0 16px;font-size:13px;color:{colour};"><strong>{label}:</strong> {escape_html(text)}</p>'
 
 
+def get_diagnosis_line(doc) -> str:
+	text = (doc.get(PRESCRIPTION_DIAGNOSIS_FIELD) or "").strip()
+	if not text:
+		return ""
+	label = escape_html(_("Diagnosis"))
+	return f'<p style="margin:0 0 16px;font-size:13px;"><strong>{label}:</strong> {escape_html(text)}</p>'
+
+
 def get_prescription_table(rows) -> str:
 	headings = ["#", _("Medication"), *(_(label) for _field, label in PRESCRIPTION_COLUMNS)]
 	head = "".join(f'<th style="{CELL_STYLE}">{escape_html(heading)}</th>' for heading in headings)
 	lines = []
 	for index, row in enumerate(rows, start=1):
-		medication = f"<strong>{escape_html(row.medication)}</strong>"
-		if row.comment:
-			medication += f'<div style="font-style:italic;color:#475569;">{escape_html(row.comment)}</div>'
-		cells = [str(index), medication]
+		cells = [str(index), f"<strong>{escape_html(row.medication)}</strong>"]
 		cells += [escape_html(str(row.get(field) or "—")) for field, _label in PRESCRIPTION_COLUMNS]
 		lines.append("<tr>" + "".join(f'<td style="{CELL_STYLE}">{cell}</td>' for cell in cells) + "</tr>")
 	return (

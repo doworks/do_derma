@@ -20,6 +20,17 @@
       </button>
       <template v-if="canEdit">
         <button
+          v-if="hasSavedRows"
+          type="button"
+          class="ghost small"
+          data-test="prescription-submit"
+          :disabled="loading || saving || isDirty || !unorderedCount"
+          :title="isDirty ? __('Save first, then submit') : ''"
+          @click="submitPrescription"
+        >
+          {{ __("Submit Rx") }}
+        </button>
+        <button
           type="button"
           class="primary small"
           data-test="prescription-save"
@@ -34,6 +45,30 @@
 
     <p v-if="errorText" class="error-text" role="alert" data-test="prescription-error">{{ errorText }}</p>
 
+    <div v-if="hasEncounter && !loading" class="diagnosis-field">
+      <div class="diagnosis-head">
+        <label class="chart-label" for="prescription-diagnosis">{{ __("Diagnosis") }}</label>
+        <button
+          v-if="canEdit && assessmentDiagnosis"
+          type="button"
+          class="ghost small"
+          data-test="prescription-copy-diagnosis"
+          @click="diagnosis = assessmentDiagnosis"
+        >
+          {{ __("Copy from assessment") }}
+        </button>
+      </div>
+      <textarea
+        id="prescription-diagnosis"
+        v-model="diagnosis"
+        rows="2"
+        class="diagnosis-input"
+        data-test="prescription-diagnosis"
+        :disabled="!canEdit"
+        :placeholder="__('Printed on the prescription')"
+      ></textarea>
+    </div>
+
     <div v-if="loading" class="empty-state">{{ __("Loading prescriptions...") }}</div>
     <div v-else-if="!hasSessionContext" class="empty-state">
       {{ __("Prescriptions are visit-scoped. Select or start an appointment session first.") }}
@@ -47,8 +82,7 @@
         <col class="col-medication" />
         <col class="col-dosage" />
         <col class="col-duration" />
-        <col class="col-form" />
-        <col class="col-repeats" />
+        <col class="col-notes" />
         <col class="col-actions" />
       </colgroup>
       <thead>
@@ -56,8 +90,7 @@
           <th class="chart-label">{{ __("Medication") }}</th>
           <th class="chart-label">{{ __("Dosage") }}</th>
           <th class="chart-label">{{ __("Duration") }} <span class="required-mark">*</span></th>
-          <th class="chart-label">{{ __("Form") }}</th>
-          <th class="chart-label">{{ __("Repeats") }}</th>
+          <th class="chart-label">{{ __("Notes") }}</th>
           <th class="chart-label"><span class="sr-only">{{ __("Actions") }}</span></th>
         </tr>
       </thead>
@@ -69,8 +102,7 @@
           </td>
           <td>{{ row.dosage || "—" }}</td>
           <td>{{ row.period || "—" }}</td>
-          <td>{{ row.dosage_form || "—" }}</td>
-          <td>{{ row.number_of_repeats_allowed || "—" }}</td>
+          <td>{{ row.comment || "—" }}</td>
           <td class="ordered-cell">
             <span class="chart-pill" data-tone="ok" :title="row.medication_request">{{ __("Ordered") }}</span>
           </td>
@@ -84,12 +116,13 @@
           :is-next="isTrailing(draft)"
           :duplicate-of="duplicateOf[orderedRows.length + index]"
           :open-field="openPicker?.key === draft.key ? openPicker.field : ''"
-          :comment-open="openComment === draft.key"
           :missing="showMissing ? getRequiredGaps(draft) : []"
           @update="(field, value) => updateField(draft, field, value)"
           @open-picker="(field) => (openPicker = { key: draft.key, field })"
           @close-picker="openPicker = null"
-          @toggle-comment="openComment = openComment === draft.key ? null : draft.key"
+          :encounter="encounterName"
+          @pick-medication="(pick) => pickMedication(draft, pick)"
+          @choose-item="openItemChooser(draft)"
           @remove="removeRow(draft)"
         />
       </tbody>
@@ -129,15 +162,7 @@ import PrescriptionRow from "./PrescriptionRow.vue"
 
 const __ = window.__ || ((text) => text)
 
-const VALUE_FIELDS = [
-  "medication",
-  "drug_code",
-  "dosage",
-  "period",
-  "dosage_form",
-  "number_of_repeats_allowed",
-  "comment",
-]
+const VALUE_FIELDS = ["medication", "drug_code", "dosage", "period", "dosage_form", "comment"]
 const REQUIRED_FIELDS = { medication: __("Medication"), period: __("Duration") }
 
 const props = defineProps({
@@ -149,24 +174,35 @@ const props = defineProps({
   encounterName: { type: String, default: "" },
   rows: { type: Array, default: () => [] },
   previous: { type: Object, default: null },
+  savedDiagnosis: { type: String, default: "" },
+  assessmentDiagnosis: { type: String, default: "" },
   readOnly: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(["save", "dirty", "print"])
+const emit = defineEmits(["save", "dirty", "print", "submit"])
 
 let nextKey = 0
 const rowComponents = {}
 const drafts = ref([])
 const snapshot = ref("")
+const diagnosis = ref("")
+const seededDiagnosis = ref("")
 const openPicker = ref(null)
-const openComment = ref(null)
 const showMissing = ref(false)
 
 const canEdit = computed(() => props.hasSessionContext && props.hasEncounter && !props.readOnly)
 const orderedRows = computed(() => (props.rows || []).filter((row) => row.medication_request))
 const rowCount = computed(() => orderedRows.value.length + getPayload().length)
 const hasSavedRows = computed(() => (props.rows || []).some((row) => row.medication))
-const isDirty = computed(() => JSON.stringify(getPayload()) !== snapshot.value)
+const unorderedCount = computed(
+  () => (props.rows || []).filter((row) => (row.medication || row.drug_code) && !row.medication_request).length
+)
+// A copied diagnosis needs saving only once the visit prescribes something, so a look at the tab stays clean.
+const isDiagnosisDirty = computed(() => {
+  if (diagnosis.value === props.savedDiagnosis) return false
+  return rowCount.value > 0 || Boolean(props.savedDiagnosis) || diagnosis.value !== seededDiagnosis.value
+})
+const isDirty = computed(() => JSON.stringify(getPayload()) !== snapshot.value || isDiagnosisDirty.value)
 
 const previousRows = computed(() => props.previous?.drug_prescription || [])
 const previousDate = computed(() => frappe.datetime.str_to_user(props.previous?.encounter_date))
@@ -217,22 +253,21 @@ watch(() => props.error, () => (errorPayload.value = JSON.stringify(getPayload()
 
 function makeDraft(original = {}) {
   const values = Object.fromEntries(VALUE_FIELDS.map((field) => [field, original[field] ?? ""]))
-  return { key: ++nextKey, original, values, linkedItems: [], lookup: 0, filling: false }
+  return { key: ++nextKey, original, values, linkedItems: [], warehouse: "", lookup: 0, filling: false }
 }
 
 function resetDrafts() {
   drafts.value = (props.rows || []).filter((row) => !row.medication_request).map((row) => makeDraft(row))
+  seededDiagnosis.value = props.savedDiagnosis || (canEdit.value ? props.assessmentDiagnosis : "")
+  diagnosis.value = seededDiagnosis.value
   snapshot.value = JSON.stringify(getPayload())
   ensureTrailingDraft()
   openPicker.value = null
-  openComment.value = null
   showMissing.value = false
 }
 
 function isBlank(draft) {
-  return VALUE_FIELDS.every(
-    (field) => !draft.values[field] || (field === "number_of_repeats_allowed" && !Number(draft.values[field]))
-  )
+  return VALUE_FIELDS.every((field) => !draft.values[field])
 }
 
 function getRequiredGaps(draft) {
@@ -264,8 +299,10 @@ function isPrescribed(medication) {
 function repeatRow(row) {
   if (isPrescribed(row.medication)) return
   ensureTrailingDraft()
-  drafts.value.at(-1).values = Object.fromEntries(VALUE_FIELDS.map((field) => [field, row[field] ?? ""]))
+  const draft = drafts.value.at(-1)
+  draft.values = Object.fromEntries(VALUE_FIELDS.map((field) => [field, row[field] ?? ""]))
   ensureTrailingDraft()
+  refreshLinkedItem(draft)
 }
 
 function printPrescription() {
@@ -276,10 +313,17 @@ function printPrescription() {
   emit("print")
 }
 
+function submitPrescription() {
+  if (isDirty.value || !unorderedCount.value) return
+  frappe.confirm(
+    __("Order {0} medications? Ordered rows can't be edited here.").replace("{0}", unorderedCount.value),
+    () => emit("submit")
+  )
+}
+
 function removeRow(draft) {
   drafts.value = drafts.value.filter((entry) => entry.key !== draft.key)
   if (openPicker.value?.key === draft.key) openPicker.value = null
-  if (openComment.value === draft.key) openComment.value = null
 }
 
 function updateField(draft, field, value) {
@@ -287,7 +331,47 @@ function updateField(draft, field, value) {
   draft.values[field] = value
 }
 
-async function applyMedication(draft, medication) {
+async function loadMedicationItems(draft) {
+  const response = await frappe.call("do_derma.api.get_medication_items", { medication: draft.values.medication })
+  return response?.message || { warehouse: "", items: [] }
+}
+
+// Always reloads: search results carry only the first few items, and stock moves.
+async function openItemChooser(draft) {
+  const { warehouse, items } = await loadMedicationItems(draft)
+  Object.assign(draft, { warehouse, linkedItems: items })
+  openPicker.value = { key: draft.key, field: "drug_code" }
+}
+
+// One Linked Item is the obvious pick; a suggested item is only ever the doctor's choice.
+function getOnlyLinkedItem(items) {
+  return items.length === 1 && !items[0].is_suggested ? items[0].item_code : ""
+}
+
+function pickMedication(draft, picked) {
+  openPicker.value = null
+  if (picked.medication !== draft.values.medication) return applyMedication(draft, picked.medication, picked)
+  if (picked.drugCode) {
+    Object.assign(draft, { warehouse: picked.warehouse, linkedItems: picked.items })
+    draft.values.drug_code = picked.drugCode
+  }
+}
+
+// A repeated line keeps its item only while the medication still links it, with today's stock.
+async function refreshLinkedItem(draft) {
+  try {
+    const { warehouse, items } = await loadMedicationItems(draft)
+    Object.assign(draft, { warehouse, linkedItems: items })
+    if (!items.some((item) => item.item_code === draft.values.drug_code)) {
+      draft.values.drug_code = getOnlyLinkedItem(items)
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn("Failed to load linked items", error)
+  }
+}
+
+async function applyMedication(draft, medication, picked = null) {
   if (medication === draft.values.medication) return
   const token = ++draft.lookup
   draft.values = { ...draft.values, medication, drug_code: "", dosage: "", period: "", dosage_form: "" }
@@ -297,10 +381,8 @@ async function applyMedication(draft, medication) {
   ensureTrailingDraft()
   draft.filling = true
   try {
-    const [itemsResponse, defaultsResponse] = await Promise.all([
-      frappe.call("healthcare.healthcare.doctype.patient_encounter.patient_encounter.get_medications", {
-        medication,
-      }),
+    const [itemsResult, defaultsResponse] = await Promise.all([
+      picked?.drugCode ? picked : loadMedicationItems(draft),
       frappe.db.get_value("Medication", medication, [
         "default_prescription_dosage",
         "default_prescription_duration",
@@ -308,15 +390,18 @@ async function applyMedication(draft, medication) {
       ]),
     ])
     if (token !== draft.lookup) return
-    draft.linkedItems = (itemsResponse?.message || []).map((entry) => entry?.item).filter(Boolean)
+    draft.linkedItems = itemsResult.items
+    draft.warehouse = itemsResult.warehouse
     const defaults = defaultsResponse?.message || {}
+    const drugCode = picked?.drugCode || getOnlyLinkedItem(draft.linkedItems)
     draft.values = {
       ...draft.values,
-      drug_code: draft.linkedItems.length === 1 ? draft.linkedItems[0] : "",
+      drug_code: drugCode,
       dosage: defaults.default_prescription_dosage || "",
       period: defaults.default_prescription_duration || "",
       dosage_form: defaults.dosage_form || "",
     }
+    if (!drugCode && draft.linkedItems.length) openPicker.value = { key: draft.key, field: "drug_code" }
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn("Failed to apply medication defaults", error)
@@ -328,21 +413,21 @@ async function applyMedication(draft, medication) {
   }
 }
 
-/** The rows to save, or null when a required field is missing (the gap is shown). */
+/** The rows and diagnosis to save, or null when a required field is missing (the gap is shown). */
 async function getSavePayload() {
   await rowComponents[openPicker.value?.key]?.commitPicker()
   showMissing.value = true
   if (validationError.value) return null
   showMissing.value = false
-  return getPayload()
+  return { rows: getPayload(), diagnosis: diagnosis.value }
 }
 
 defineExpose({ getSavePayload })
 
 async function save() {
   if (!canEdit.value || props.saving || props.loading) return
-  const rows = await getSavePayload()
-  if (rows) emit("save", rows)
+  const payload = await getSavePayload()
+  if (payload) emit("save", payload)
 }
 </script>
 
@@ -351,6 +436,33 @@ async function save() {
   margin: 0 0 8px;
   color: var(--chart-danger-text);
   font-size: 12px;
+}
+
+.diagnosis-field {
+  margin-bottom: 12px;
+}
+
+.diagnosis-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.diagnosis-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--chart-border);
+  border-radius: 6px;
+  background: var(--chart-surface);
+  color: var(--chart-text);
+  font-size: 13px;
+  resize: vertical;
+}
+
+.diagnosis-input:focus {
+  border-color: var(--chart-accent);
+  outline: none;
 }
 
 .empty-state {
@@ -385,13 +497,12 @@ async function save() {
   width: 17%;
 }
 
-.col-duration,
-.col-form {
+.col-duration {
   width: 15%;
 }
 
-.col-repeats {
-  width: 10%;
+.col-notes {
+  width: 25%;
 }
 
 .col-actions {

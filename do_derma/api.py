@@ -24,16 +24,17 @@ from do_derma.config.marker_size import (
 )
 from do_derma.consumables import marks as consumable_marks
 from do_derma.consumables import procedures as consumable_procedures
+from do_derma.prescriptions import medications
 from do_derma.printing import pages
-from do_derma.schema import COMPLETION_OVERRIDE_FIELD
+from do_derma.schema import COMPLETION_OVERRIDE_FIELD, PRESCRIPTION_DIAGNOSIS_FIELD
 from do_derma.settings import (
 	ENFORCEMENT_WARN,
 	FEATURE_TOGGLES,
 	get_feature_toggles,
+	get_prescription_warehouse,
 	get_readiness_settings,
 )
 
-MAX_PRESCRIPTION_REPEATS = 12
 UNINSTALLED_APP_MESSAGE = re.compile(r"App ([a-z0-9_]+) is not installed", re.IGNORECASE)
 
 DERMA_FINDING_FIELDS = [
@@ -2212,17 +2213,6 @@ def _drug_prescription_row(source: Any, allowed: set[str]) -> dict[str, Any]:
 	return {key: values.get(key) for key in allowed if key in values}
 
 
-def _validate_prescription_rows(rows: list[dict[str, Any]]) -> None:
-	"""Refuse a repeat count no clinician means, which a typo in the wrong column produces."""
-	for index, row in enumerate(rows, start=1):
-		repeats = flt(row.get("number_of_repeats_allowed") or 0)
-		if repeats < 0 or repeats > MAX_PRESCRIPTION_REPEATS:
-			frappe.throw(
-				_("Row {0}: repeats must be between 0 and {1}.").format(index, MAX_PRESCRIPTION_REPEATS),
-				frappe.ValidationError,
-			)
-
-
 def _merge_ordered_prescriptions(
 	existing: list[dict[str, Any]], incoming: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -2247,6 +2237,10 @@ def _drug_prescription_rows(encounter_doc) -> list[dict[str, Any]]:
 		return []
 	allowed = _drug_prescription_fields()
 	return [_drug_prescription_row(row, allowed) for row in encounter_doc.get("drug_prescription") or []]
+
+
+def _get_assessment_diagnosis(encounter_doc) -> str:
+	return _join_unique(row.diagnosis for row in encounter_doc.get("diagnosis") or [])
 
 
 def _get_previous_prescriptions(encounter_doc) -> dict[str, Any] | None:
@@ -3384,11 +3378,13 @@ def get_derma_prescriptions(encounter=None, appointment=None, patient=None):
 		"encounter": encounter_doc.name if encounter_doc else encounter or "",
 		"drug_prescription": _drug_prescription_rows(encounter_doc) if encounter_doc else [],
 		"previous": _get_previous_prescriptions(encounter_doc) if encounter_doc else None,
+		"diagnosis": cstr(encounter_doc.get(PRESCRIPTION_DIAGNOSIS_FIELD)) if encounter_doc else "",
+		"assessment_diagnosis": _get_assessment_diagnosis(encounter_doc) if encounter_doc else "",
 	}
 
 
 @frappe.whitelist()
-def set_derma_prescriptions(payload=None, encounter=None, appointment=None, patient=None):
+def set_derma_prescriptions(payload=None, encounter=None, appointment=None, patient=None, diagnosis=None):
 	_ensure_clinical_access()
 	if not _has_field("Patient Encounter", "drug_prescription"):
 		return {"encounter": encounter or "", "drug_prescription": []}
@@ -3403,11 +3399,47 @@ def set_derma_prescriptions(payload=None, encounter=None, appointment=None, pati
 	_ensure_encounter_open(encounter_doc.name)
 	allowed = _drug_prescription_fields()
 	prescriptions = [_drug_prescription_row(row, allowed) for row in rows if isinstance(row, dict)]
-	_validate_prescription_rows(prescriptions)
 	prescriptions = _merge_ordered_prescriptions(_drug_prescription_rows(encounter_doc), prescriptions)
 	encounter_doc.set("drug_prescription", prescriptions)
+	if diagnosis is not None and _has_field("Patient Encounter", PRESCRIPTION_DIAGNOSIS_FIELD):
+		encounter_doc.set(PRESCRIPTION_DIAGNOSIS_FIELD, cstr(diagnosis).strip())
 	encounter_doc.save(ignore_permissions=True)
-	return {"encounter": encounter_doc.name, "drug_prescription": _drug_prescription_rows(encounter_doc)}
+	return get_derma_prescriptions(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
+def submit_derma_prescriptions(encounter=None, appointment=None, patient=None):
+	"""Order the saved, not-yet-ordered rows as Medication Requests; the visit stays open."""
+	_ensure_clinical_access()
+	encounter_doc = _resolve_patient_encounter_doc(
+		encounter=encounter, appointment=appointment, patient=patient, ptype="write"
+	)
+	if not encounter_doc:
+		frappe.throw(_("No encounter found for this session."), frappe.ValidationError)
+	_ensure_encounter_open(encounter_doc.name)
+	rows = encounter_doc.get("drug_prescription") or []
+	if not any((row.medication or row.drug_code) and not row.medication_request for row in rows):
+		frappe.throw(_("Nothing to order: save new medications first."), frappe.ValidationError)
+	encounter_doc.make_medication_request()
+	encounter_doc.save(ignore_permissions=True)
+	return get_derma_prescriptions(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
+def get_medication_items(medication: str) -> dict[str, Any]:
+	"""The medication's items with their stock in the prescription warehouse."""
+	_ensure_clinical_access()
+	warehouse = get_prescription_warehouse()
+	return {"warehouse": warehouse or "", "items": medications.get_items(medication, warehouse)}
+
+
+@frappe.whitelist()
+def search_prescription_medications(txt: str = "", encounter: str | None = None) -> dict[str, Any]:
+	"""The Rx medication picker's results, ranked for the encounter's practitioner."""
+	_ensure_clinical_access()
+	practitioner = frappe.db.get_value("Patient Encounter", encounter, "practitioner") if encounter else None
+	warehouse = get_prescription_warehouse()
+	return {"warehouse": warehouse or "", "results": medications.search(txt or "", practitioner, warehouse)}
 
 
 @frappe.whitelist()
