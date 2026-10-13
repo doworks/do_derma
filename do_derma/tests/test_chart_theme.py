@@ -1627,3 +1627,13 @@ class TestAssessmentClear(TestCase):
 		self.assertIn("@clear=\"clearAssessment('note')\"", chart)
 		self.assertIn("@clear=\"clearAssessment('ai')\"", chart)
 		self.assertIn('method: "do_derma.api.clear_derma_assessment"', chart)
+
+	def test_clear_ai_leaves_the_note_and_edit_state_alone(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		script = chart.split("async function clearAssessment(scope)", 1)[1].split("\n}\n", 1)[0]
+		self.assertIn('if (scope === "ai") applyAiResponse(', script)
+		self.assertIn("else applyAssessmentResponse(", script)
+		self.assertIn('if (scope === "note") assessmentPanel.editing = true', script)
+		ai = chart.split("function applyAiResponse(message)", 1)[1].split("\n}\n", 1)[0]
+		for forbidden in ("editing", "values", "Values", "isFilled"):
+			self.assertNotIn(forbidden, ai)

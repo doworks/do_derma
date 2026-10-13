@@ -2051,6 +2051,15 @@ function applyAssessmentResponse(message) {
   assessmentPanel.editing = false
 }
 
+function applyAiResponse(message) {
+  assessmentPanel.aiDiagnosis = message.ai_diagnosis || ""
+  assessmentPanel.icd10 = message.icd10 || ""
+  assessmentPanel.noteAr = message.note_ar || ""
+  assessmentPanel.patientAdvice = message.patient_advice || ""
+  assessmentPanel.patientAdviceAr = message.patient_advice_ar || ""
+  assessmentPanel.printPatientAdvice = Boolean(message.print_patient_advice)
+}
+
 async function saveAssessment({ payload, mode }) {
   assessmentPanel.saving = true
   assessmentPanel.error = ""
@@ -2078,8 +2087,9 @@ async function clearAssessment(scope) {
       method: "do_derma.api.clear_derma_assessment",
       args: { ...contextArgs(), scope },
     })
-    applyAssessmentResponse(response.message || {})
-    assessmentPanel.editing = scope === "note"
+    if (scope === "ai") applyAiResponse(response.message || {})
+    else applyAssessmentResponse(response.message || {})
+    if (scope === "note") assessmentPanel.editing = true
     if (loadedTabs.prescriptions) loadPrescriptionPanel(true)
     frappe.show_alert({ message: scope === "ai" ? __("AI output cleared") : __("Note cleared"), indicator: "green" })
   } catch (error) {
