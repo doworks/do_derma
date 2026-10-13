@@ -309,6 +309,18 @@ class TestClearAssessment(AssessmentTestBase):
 		self.assertFalse(any(result["hp_values"].values()))
 		self.assertEqual(result["ai_diagnosis"], "Eczema")
 
+	def test_clear_note_empties_the_diagnosis_table(self):
+		if not any(row["fieldname"] == "diagnosis" for row in assessment.get_structured_layout()):
+			self.skipTest("The Structured layout has no diagnosis table on this site")
+		encounter = self._filled()
+		if not frappe.db.exists("Diagnosis", "Derma Clear Test"):
+			frappe.get_doc({"doctype": "Diagnosis", "diagnosis": "Derma Clear Test"}).insert(ignore_permissions=True)
+		doc = frappe.get_doc("Patient Encounter", encounter.name)
+		doc.append("diagnosis", {"diagnosis": "Derma Clear Test"})
+		doc.save(ignore_permissions=True)
+		api.clear_derma_assessment(scope="note", encounter=encounter.name)
+		self.assertFalse(frappe.get_all("Patient Encounter Diagnosis", {"parent": encounter.name}))
+
 	def test_clear_ai_keeps_the_note(self):
 		encounter = self._filled()
 		result = api.clear_derma_assessment(scope="ai", encounter=encounter.name)

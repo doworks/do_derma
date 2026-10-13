@@ -1527,6 +1527,12 @@ class TestPrescriptionOrders(TestCase):
 		self.assertIn('@cancel="cancelPrescriptionOrders"', chart)
 		self.assertIn('method: "do_derma.api.cancel_derma_prescriptions"', chart)
 
+	def test_the_cancelled_alert_counts_the_orders(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		script = chart.split("async function cancelPrescriptionOrders(rows)", 1)[1].split("\n}\n", 1)[0]
+		self.assertIn('__("Order cancelled")', script)
+		self.assertIn('__("{0} orders cancelled")', script)
+
 
 class TestPreviousPrescriptions(TestCase):
 	"""Earlier prescriptions as a scrolling strip of cards, five at a time, each repeatable."""
@@ -1608,6 +1614,7 @@ class TestPrescriptionAutoAdvance(TestCase):
 		focus = row_script.split("function hasFocusElsewhere()", 1)[1].split("\n}", 1)[0]
 		self.assertIn("document.body", focus)
 		self.assertIn("rowElement.value.contains", focus)
+		self.assertIn("if (!rowElement.value) return false", focus)
 		self.assertIn("hasFocusElsewhere", row_script.split("defineExpose", 1)[1].split("\n", 1)[0])
 		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
 		start = script.split("function startNextRow()", 1)[1].split("\n}", 1)[0]
@@ -1655,6 +1662,7 @@ class TestAssessmentClear(TestCase):
 		self.assertIn('if (scope === "ai") applyAiResponse(', script)
 		self.assertIn("else applyAssessmentResponse(", script)
 		self.assertIn('if (scope === "note") assessmentPanel.editing = true', script)
+		self.assertIn('if (scope === "note" && loadedTabs.prescriptions) loadPrescriptionPanel(true)', script)
 		ai = chart.split("function applyAiResponse(message)", 1)[1].split("\n}\n", 1)[0]
 		for forbidden in ("editing", "values", "Values", "isFilled"):
 			self.assertNotIn(forbidden, ai)

@@ -234,6 +234,7 @@ function focusNotes() {
 
 // True when the doctor moved focus to another control on purpose.
 function hasFocusElsewhere() {
+  if (!rowElement.value) return false
   const active = document.activeElement
   return Boolean(active) && active !== document.body && !rowElement.value.contains(active)
 }

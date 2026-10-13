@@ -2090,7 +2090,8 @@ async function clearAssessment(scope) {
     if (scope === "ai") applyAiResponse(response.message || {})
     else applyAssessmentResponse(response.message || {})
     if (scope === "note") assessmentPanel.editing = true
-    if (loadedTabs.prescriptions) loadPrescriptionPanel(true)
+    // Only the note seeds the Rx diagnosis.
+    if (scope === "note" && loadedTabs.prescriptions) loadPrescriptionPanel(true)
     frappe.show_alert({ message: scope === "ai" ? __("AI output cleared") : __("Note cleared"), indicator: "green" })
   } catch (error) {
     assessmentPanel.error = serverErrorText(error, __("The assessment could not be cleared."))
@@ -2284,7 +2285,8 @@ async function cancelPrescriptionOrders(rows) {
       args: { ...contextArgs(), rows },
     })
     applyPrescriptionResponse(response.message)
-    frappe.show_alert({ message: __("Order cancelled"), indicator: "green" })
+    const message = rows?.length > 1 ? __("{0} orders cancelled").replace("{0}", rows.length) : __("Order cancelled")
+    frappe.show_alert({ message, indicator: "green" })
   } catch (error) {
     prescriptionPanel.error = serverErrorText(error, __("The order could not be cancelled."))
     frappe.show_alert({ message: prescriptionPanel.error, indicator: "red" })
