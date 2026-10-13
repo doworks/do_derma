@@ -310,6 +310,7 @@
             ref="prescriptionPanelRef"
             @save="savePrescriptionPanel"
             @submit="submitPrescriptionPanel"
+            @cancel="cancelPrescriptionOrders"
             @dirty="(value) => (unsavedSections.prescriptions = value)"
             @print="printDermaPage('prescription', prescriptionPanel.encounter)"
           />
@@ -2239,6 +2240,24 @@ async function submitPrescriptionPanel() {
     frappe.show_alert({ message: __("Prescription ordered"), indicator: "green" })
   } catch (error) {
     prescriptionPanel.error = serverErrorText(error, __("The prescription could not be ordered."))
+    frappe.show_alert({ message: prescriptionPanel.error, indicator: "red" })
+  } finally {
+    prescriptionPanel.saving = false
+  }
+}
+
+async function cancelPrescriptionOrders(rows) {
+  prescriptionPanel.saving = true
+  prescriptionPanel.error = ""
+  try {
+    const response = await frappe.call({
+      method: "do_derma.api.cancel_derma_prescriptions",
+      args: { ...contextArgs(), rows },
+    })
+    applyPrescriptionResponse(response.message)
+    frappe.show_alert({ message: __("Order cancelled"), indicator: "green" })
+  } catch (error) {
+    prescriptionPanel.error = serverErrorText(error, __("The order could not be cancelled."))
     frappe.show_alert({ message: prescriptionPanel.error, indicator: "red" })
   } finally {
     prescriptionPanel.saving = false

@@ -20,6 +20,17 @@
       </button>
       <template v-if="canEdit">
         <button
+          v-if="cancellableRows.length"
+          type="button"
+          class="ghost small"
+          data-test="prescription-cancel-all"
+          :disabled="loading || saving || isDirty"
+          :title="isDirty ? __('Save first, then cancel') : ''"
+          @click="cancelOrders(cancellableRows)"
+        >
+          {{ __("Cancel all orders") }}
+        </button>
+        <button
           v-if="hasSavedRows"
           type="button"
           class="ghost small"
@@ -105,6 +116,24 @@
           <td>{{ row.comment || "—" }}</td>
           <td class="ordered-cell">
             <span class="chart-pill" data-tone="ok" :title="row.medication_request">{{ __("Ordered") }}</span>
+            <span
+              v-if="getDispenseStatus(row)"
+              class="chart-pill"
+              :data-tone="getDispenseStatus(row).tone"
+              data-test="prescription-dispense-status"
+            >{{ getDispenseStatus(row).label }}</span>
+            <button
+              v-if="canEdit && !isDispensed(row)"
+              type="button"
+              class="ghost small"
+              data-test="prescription-cancel"
+              :disabled="loading || saving || isDirty"
+              :title="isDirty ? __('Save first, then cancel') : __('Cancel order')"
+              :aria-label="__('Cancel order')"
+              @click="cancelOrders([row])"
+            >
+              <i class="fa-solid fa-ban" aria-hidden="true"></i>
+            </button>
           </td>
         </tr>
         <PrescriptionRow
@@ -159,6 +188,7 @@
 <script setup>
 import { computed, ref, watch } from "vue"
 import PrescriptionRow from "./PrescriptionRow.vue"
+import { getDispenseStatus, isDispensed } from "./dispense.js"
 
 const __ = window.__ || ((text) => text)
 
@@ -179,7 +209,7 @@ const props = defineProps({
   readOnly: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(["save", "dirty", "print", "submit"])
+const emit = defineEmits(["save", "dirty", "print", "submit", "cancel"])
 
 let nextKey = 0
 const rowComponents = {}
@@ -192,6 +222,7 @@ const showMissing = ref(false)
 
 const canEdit = computed(() => props.hasSessionContext && props.hasEncounter && !props.readOnly)
 const orderedRows = computed(() => (props.rows || []).filter((row) => row.medication_request))
+const cancellableRows = computed(() => orderedRows.value.filter((row) => !isDispensed(row)))
 const rowCount = computed(() => orderedRows.value.length + getPayload().length)
 const hasSavedRows = computed(() => (props.rows || []).some((row) => row.medication))
 const unorderedCount = computed(
@@ -319,6 +350,14 @@ function submitPrescription() {
     __("Order {0} medications? Ordered rows can't be edited here.").replace("{0}", unorderedCount.value),
     () => emit("submit")
   )
+}
+
+function cancelOrders(rows) {
+  const message =
+    rows.length === 1
+      ? __("Cancel the order for {0}? The row becomes editable again.").replace("{0}", rows[0].medication || rows[0].drug_name)
+      : __("Cancel {0} orders? The rows become editable again.").replace("{0}", rows.length)
+  frappe.confirm(message, () => emit("cancel", rows.map((row) => row.name)))
 }
 
 function removeRow(draft) {
@@ -551,7 +590,11 @@ async function save() {
 }
 
 .ordered-cell {
-  text-align: right;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .sr-only {

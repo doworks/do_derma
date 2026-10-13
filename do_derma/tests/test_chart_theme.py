@@ -862,6 +862,8 @@ PRESCRIPTION_PANEL = PRESCRIPTION_DIR / "PrescriptionPanel.vue"
 PRESCRIPTION_ROW = PRESCRIPTION_DIR / "PrescriptionRow.vue"
 MEDICATION_SEARCH = PRESCRIPTION_DIR / "MedicationSearch.vue"
 PRESCRIPTION_STOCK = PRESCRIPTION_DIR / "stock.js"
+PRESCRIPTION_DISPENSE = PRESCRIPTION_DIR / "dispense.js"
+PREVIOUS_PRESCRIPTIONS = PRESCRIPTION_DIR / "PreviousPrescriptions.vue"
 
 
 class TestPrescriptionRow(TestCase):
@@ -1054,7 +1056,7 @@ class TestPrescriptionPanelRestyle(TestCase):
 		template, _, _ = get_component_parts(PRESCRIPTION_PANEL)
 		header = get_element(template, '<Teleport defer to="#chart-section-actions">')
 		self.assertRegex(header, r'class="primary small"\s+data-test="prescription-save"')
-		self.assertEqual(header.count("<button"), 3)
+		self.assertEqual(header.count("<button"), 4)
 		self.assertNotIn("Add medication", template)
 		self.assertEqual(template.count("primary"), 1)
 
@@ -1492,3 +1494,41 @@ class TestUnsavedChangesGuard(TestCase):
 	def test_reload_warns_while_anything_is_unsaved(self):
 		self.assertIn('window.addEventListener("beforeunload", warnBeforeUnload)', self.chart)
 		self.assertIn('window.removeEventListener("beforeunload", warnBeforeUnload)', self.chart)
+
+
+class TestPrescriptionOrders(TestCase):
+	"""Ordered rows show the pharmacy's progress and can be cancelled while nothing is dispensed."""
+
+	def test_ordered_rows_show_their_dispense_status(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('import { getDispenseStatus, isDispensed } from "./dispense.js"', script)
+		cell = get_element(template, '<td class="ordered-cell">')
+		self.assertIn('data-test="prescription-dispense-status"', cell)
+		helpers = PRESCRIPTION_DISPENSE.read_text()
+		for label in ('__("Not dispensed")', '__("Partial")', '__("Dispensed")'):
+			self.assertIn(label, helpers)
+
+	def test_a_dispensed_row_offers_no_cancel(self):
+		template, _, _ = get_component_parts(PRESCRIPTION_PANEL)
+		button = get_element(template, '<button\n              v-if="canEdit && !isDispensed(row)"')
+		self.assertIn('data-test="prescription-cancel"', button)
+
+	def test_cancel_all_skips_dispensed_rows(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('data-test="prescription-cancel-all"', template)
+		self.assertIn("orderedRows.value.filter((row) => !isDispensed(row))", script)
+
+	def test_cancel_waits_for_a_save(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		for hook in ('data-test="prescription-cancel"', 'data-test="prescription-cancel-all"'):
+			start = template.index(hook)
+			button = template[template.rindex("<button", 0, start) : template.index(">", start)]
+			self.assertIn("isDirty", button)
+		cancel = script.split("function cancelOrders(rows)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("frappe.confirm(", cancel)
+		self.assertIn('emit("cancel", rows.map((row) => row.name))', cancel)
+
+	def test_the_chart_cancels_through_the_endpoint(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		self.assertIn('@cancel="cancelPrescriptionOrders"', chart)
+		self.assertIn('method: "do_derma.api.cancel_derma_prescriptions"', chart)
