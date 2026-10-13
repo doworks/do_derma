@@ -24,7 +24,7 @@ from do_derma.config.marker_size import (
 )
 from do_derma.consumables import marks as consumable_marks
 from do_derma.consumables import procedures as consumable_procedures
-from do_derma.prescriptions import dispense, medications
+from do_derma.prescriptions import dispense, medications, orders
 from do_derma.printing import pages
 from do_derma.schema import COMPLETION_OVERRIDE_FIELD, PRESCRIPTION_DIAGNOSIS_FIELD
 from do_derma.settings import (
@@ -3423,6 +3423,24 @@ def submit_derma_prescriptions(encounter=None, appointment=None, patient=None):
 	if not any((row.medication or row.drug_code) and not row.medication_request for row in rows):
 		frappe.throw(_("Nothing to order: save new medications first."), frappe.ValidationError)
 	encounter_doc.make_medication_request()
+	encounter_doc.save(ignore_permissions=True)
+	return get_derma_prescriptions(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
+def cancel_derma_prescriptions(rows=None, encounter=None, appointment=None, patient=None):
+	"""Cancel ordered rows (all when `rows` is empty) and unlock them; refused once anything is dispensed."""
+	_ensure_clinical_access()
+	encounter_doc = _resolve_patient_encounter_doc(
+		encounter=encounter, appointment=appointment, patient=patient, ptype="write"
+	)
+	if not encounter_doc:
+		frappe.throw(_("No encounter found for this session."), frappe.ValidationError)
+	_ensure_encounter_open(encounter_doc.name)
+	names = _parse_payload(rows) or []
+	if not isinstance(names, list):
+		frappe.throw(_("Rows must be a list."), frappe.ValidationError)
+	orders.cancel(encounter_doc, names)
 	encounter_doc.save(ignore_permissions=True)
 	return get_derma_prescriptions(encounter=encounter_doc.name)
 

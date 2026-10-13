@@ -659,3 +659,73 @@ class TestPrescriptionDispense(PrescriptionHelpers, IntegrationTestCase):
 		self.assertEqual(dispense.get_card_status([line(2, 2), line(1, 0)]), dispense.PARTIAL)
 		self.assertEqual(dispense.get_card_status([line(2, 0)]), dispense.NOT_DISPENSED)
 		self.assertEqual(dispense.get_card_status([line(None, None)]), "")
+
+
+class TestCancelPrescriptions(PrescriptionHelpers, IntegrationTestCase):
+	"""Cancelling an order unlocks the row; anything dispensed blocks the whole call."""
+
+	def _ordered(self, count=2):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row() for _ in range(count)]), encounter=encounter.name)
+		return encounter, api.submit_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+
+	def _request_status(self, row):
+		return frappe.db.get_value("Medication Request", row["medication_request"], "docstatus")
+
+	def test_cancel_one_unlocks_only_that_row(self):
+		encounter, rows = self._ordered()
+		result = api.cancel_derma_prescriptions(rows=json.dumps([rows[0]["name"]]), encounter=encounter.name)
+		requests = {row["name"]: row.get("medication_request") for row in result["drug_prescription"]}
+		self.assertIsNone(requests[rows[0]["name"]])
+		self.assertEqual(requests[rows[1]["name"]], rows[1]["medication_request"])
+		self.assertEqual(self._request_status(rows[0]), 2)
+		self.assertEqual(self._request_status(rows[1]), 1)
+
+	def test_cancel_all(self):
+		encounter, rows = self._ordered()
+		result = api.cancel_derma_prescriptions(encounter=encounter.name)
+		self.assertFalse(any(row.get("medication_request") for row in result["drug_prescription"]))
+		self.assertEqual([self._request_status(row) for row in rows], [2, 2])
+
+	def test_a_cancelled_row_can_be_ordered_again(self):
+		encounter, rows = self._ordered(count=1)
+		api.cancel_derma_prescriptions(encounter=encounter.name)
+		api.submit_derma_prescriptions(encounter=encounter.name)
+		statuses = frappe.get_all("Medication Request", {"order_group": encounter.name}, pluck="docstatus")
+		self.assertEqual(sorted(statuses), [1, 2])
+
+	def test_a_dispensed_row_blocks_the_whole_call(self):
+		encounter, rows = self._ordered()
+		with patch("do_derma.prescriptions.dispense.dispensed_quantities", return_value={rows[1]["name"]: 1.0}):
+			with self.assertRaisesRegex(frappe.ValidationError, "has been dispensed"):
+				api.cancel_derma_prescriptions(encounter=encounter.name)
+		self.assertEqual([self._request_status(row) for row in rows], [1, 1])
+
+	def test_a_foreign_row_is_refused(self):
+		encounter, _ = self._ordered(count=1)
+		with self.assertRaisesRegex(frappe.ValidationError, "does not belong"):
+			api.cancel_derma_prescriptions(rows=json.dumps(["not-a-row"]), encounter=encounter.name)
+
+	def test_an_unordered_row_is_refused(self):
+		encounter = self._make_encounter(self._make_patient())
+		row = api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)[
+			"drug_prescription"
+		][0]
+		with self.assertRaisesRegex(frappe.ValidationError, "is not ordered"):
+			api.cancel_derma_prescriptions(rows=json.dumps([row["name"]]), encounter=encounter.name)
+
+	def test_nothing_ordered_is_refused(self):
+		encounter = self._make_encounter(self._make_patient())
+		with self.assertRaisesRegex(frappe.ValidationError, "Nothing to cancel"):
+			api.cancel_derma_prescriptions(encounter=encounter.name)
+
+	def test_a_completed_visit_cannot_cancel(self):
+		encounter, _ = self._ordered(count=1)
+		frappe.get_doc("Patient Encounter", encounter.name).submit()
+		with self.assertRaises(frappe.ValidationError):
+			api.cancel_derma_prescriptions(encounter=encounter.name)
+
+	def test_cancel_is_gated(self):
+		frappe.set_user(self._make_limited_user())
+		with self.assertRaises(frappe.PermissionError):
+			api.cancel_derma_prescriptions(encounter="does-not-matter")
