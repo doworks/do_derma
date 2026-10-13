@@ -73,28 +73,6 @@ class TestDermaPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 	def _prescribe(self, encounter, drug_name):
 		api.set_derma_prescriptions(payload=json.dumps([self._row(drug_name=drug_name)]), encounter=encounter.name)
 
-	def test_previous_comes_from_the_last_visit_with_medications(self):
-		patient = self._make_patient()
-		self._prescribe(self._make_encounter(patient), "Doxycycline")
-		self._make_encounter(patient)
-		current = self._make_encounter(patient)
-		previous = api.get_derma_prescriptions(encounter=current.name)["previous"]
-		self.assertEqual([row["drug_name"] for row in previous["drug_prescription"]], ["Doxycycline"])
-		self.assertTrue(previous["encounter_date"])
-
-	def test_previous_skips_the_current_and_cancelled_visits(self):
-		patient = self._make_patient()
-		cancelled = self._make_encounter(patient)
-		self._prescribe(cancelled, "Isotretinoin")
-		frappe.db.set_value("Patient Encounter", cancelled.name, "status", "Cancelled")
-		current = self._make_encounter(patient)
-		self._prescribe(current, "Hydrocortisone")
-		self.assertIsNone(api.get_derma_prescriptions(encounter=current.name)["previous"])
-
-	def test_a_first_visit_has_no_previous(self):
-		current = self._make_encounter(self._make_patient())
-		self.assertIsNone(api.get_derma_prescriptions(encounter=current.name)["previous"])
-
 	def test_the_printout_lists_each_saved_medication(self):
 		patient = self._make_patient()
 		frappe.db.set_value("Patient", patient, "allergies", "Penicillin")
@@ -222,6 +200,51 @@ class TestDermaPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		patient = self._make_patient()
 		chart = api.get_patient_derma_chart(patient_id=patient)
 		self.assertEqual(chart["prescription_count"], 0)
+
+
+class TestPreviousPrescriptions(PrescriptionHelpers, IntegrationTestCase):
+	"""One card per earlier visit that prescribed, newest first, five at a time."""
+
+	def _visit_with(self, patient, *drug_names):
+		encounter = self._make_encounter(patient)
+		rows = [self._row(drug_name=name) for name in drug_names]
+		api.set_derma_prescriptions(payload=json.dumps(rows), encounter=encounter.name)
+		return encounter
+
+	def test_cards_page_newest_first(self):
+		patient = self._make_patient()
+		visits = [self._visit_with(patient, f"Drug {index}") for index in range(6)]
+		current = self._make_encounter(patient)
+		first = api.get_previous_prescriptions(encounter=current.name)
+		second = api.get_previous_prescriptions(encounter=current.name, start=5)
+		self.assertEqual((len(first["cards"]), first["has_more"]), (5, True))
+		self.assertEqual((len(second["cards"]), second["has_more"]), (1, False))
+		shown = [card["encounter"] for card in first["cards"] + second["cards"]]
+		self.assertEqual(shown, [visit.name for visit in reversed(visits)])
+
+	def test_a_visit_with_two_rows_is_one_card(self):
+		patient = self._make_patient()
+		self._visit_with(patient, "Doxycycline", "Adapalene")
+		cards = api.get_previous_prescriptions(encounter=self._make_encounter(patient).name)["cards"]
+		self.assertEqual(len(cards), 1)
+		self.assertEqual([line["drug_name"] for line in cards[0]["lines"]], ["Doxycycline", "Adapalene"])
+		self.assertEqual(cards[0]["status"], "Not dispensed")
+
+	def test_the_current_and_cancelled_visits_are_skipped(self):
+		patient = self._make_patient()
+		cancelled = self._visit_with(patient, "Isotretinoin")
+		frappe.db.set_value("Patient Encounter", cancelled.name, "status", "Cancelled")
+		current = self._visit_with(patient, "Hydrocortisone")
+		self.assertEqual(api.get_previous_prescriptions(encounter=current.name)["cards"], [])
+
+	def test_the_rx_tab_no_longer_returns_previous(self):
+		current = self._make_encounter(self._make_patient())
+		self.assertNotIn("previous", api.get_derma_prescriptions(encounter=current.name))
+
+	def test_is_gated(self):
+		frappe.set_user(self._make_limited_user())
+		with self.assertRaises(frappe.PermissionError):
+			api.get_previous_prescriptions(encounter="does-not-matter")
 
 
 class TestOrderedPrescriptions(PrescriptionHelpers, IntegrationTestCase):

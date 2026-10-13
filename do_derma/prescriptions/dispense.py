@@ -11,6 +11,20 @@ from do_health.pharmacy.prescriptions import (
 from frappe import _
 from frappe.utils import flt
 
+CARD_ROW_FIELDS = [
+	"name",
+	"parent",
+	"medication",
+	"drug_code",
+	"drug_name",
+	"dosage",
+	"period",
+	"interval",
+	"interval_uom",
+	"dosage_form",
+	"comment",
+]
+LINE_FIELDS = ("medication", "drug_code", "drug_name", "dosage", "period", "dosage_form", "comment")
 DISPENSED = "Dispensed"
 PARTIAL = "Partially dispensed"
 NOT_DISPENSED = "Not dispensed"
@@ -55,3 +69,63 @@ def ensure_not_dispensed(rows) -> None:
 				),
 				frappe.ValidationError,
 			)
+
+
+def get_previous_cards(encounter_doc, start: int, limit: int) -> dict[str, Any]:
+	"""The patient's other visits that prescribed a medication, newest first, one card each."""
+	encounters = frappe.get_all(
+		"Patient Encounter",
+		filters=[
+			["patient", "=", encounter_doc.patient],
+			["name", "!=", encounter_doc.name],
+			["docstatus", "<", 2],
+			["status", "!=", "Cancelled"],
+			["Drug Prescription", "medication", "is", "set"],
+		],
+		fields=["name", "encounter_date", "practitioner_name", "creation"],
+		order_by="encounter_date desc, creation desc",
+		limit_start=start,
+		limit_page_length=limit + 1,
+		distinct=True,
+	)
+	page = encounters[:limit]
+	rows = get_card_rows([encounter.name for encounter in page])
+	quantities = get_quantities(rows)
+	return {
+		"cards": [get_card(encounter, rows, quantities) for encounter in page],
+		"has_more": len(encounters) > limit,
+	}
+
+
+def get_card_rows(encounters: list[str]) -> list:
+	if not encounters:
+		return []
+	fields = list(CARD_ROW_FIELDS)
+	if frappe.get_meta("Drug Prescription").has_field(HIDE_FROM_PHARMACY_FIELD):
+		fields.append(HIDE_FROM_PHARMACY_FIELD)
+	return frappe.get_all(
+		"Drug Prescription",
+		filters={
+			"parent": ("in", encounters),
+			"parenttype": "Patient Encounter",
+			"medication": ("is", "set"),
+		},
+		fields=fields,
+		order_by="idx asc",
+		limit_page_length=0,
+	)
+
+
+def get_card(encounter, rows: list, quantities: dict) -> dict[str, Any]:
+	lines = [
+		{**{key: row.get(key) for key in LINE_FIELDS}, **quantities[row.name]}
+		for row in rows
+		if row.parent == encounter.name
+	]
+	return {
+		"encounter": encounter.name,
+		"encounter_date": encounter.encounter_date,
+		"practitioner_name": encounter.practitioner_name,
+		"status": get_card_status(lines),
+		"lines": lines,
+	}
