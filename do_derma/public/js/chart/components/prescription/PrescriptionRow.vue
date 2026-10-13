@@ -174,7 +174,10 @@ let control = null
 watch(
   () => props.openField,
   async (field) => {
-    if (!LINK_OPTIONS[field]) return
+    if (!LINK_OPTIONS[field]) {
+      control = null
+      return
+    }
     await nextTick()
     mountPicker(field)
   },

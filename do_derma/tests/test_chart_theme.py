@@ -975,7 +975,7 @@ class TestMedicationSearch(TestCase):
 		self.assertIn(':encounter="encounter"', cell)
 		self.assertIn("@pick=\"emit('pick-medication', $event)\"", cell)
 		self.assertNotIn('medication: "Medication"', script)
-		self.assertIn("if (!LINK_OPTIONS[field]) return", script)
+		self.assertIn("if (!LINK_OPTIONS[field]) {", script)
 
 	def test_search_asks_the_ranked_endpoint_and_drops_stale_answers(self):
 		_, script, _ = get_component_parts(MEDICATION_SEARCH)
@@ -1587,6 +1587,11 @@ class TestPrescriptionAutoAdvance(TestCase):
 		self.assertIn("if (linkControl !== control) return", mount)
 		self.assertIn("linkControl.get_value()", mount)
 		self.assertIn("control = linkControl", mount)
+
+	def test_closing_the_picker_retires_its_control(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_ROW)
+		watcher = script.split("() => props.openField,", 1)[1].split("await nextTick()", 1)[0]
+		self.assertIn("if (!LINK_OPTIONS[field]) {\n      control = null", watcher)
 
 	def test_focus_moved_on_purpose_is_not_stolen(self):
 		_, row_script, _ = get_component_parts(PRESCRIPTION_ROW)
