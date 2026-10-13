@@ -4,6 +4,16 @@ import json
 from unittest.mock import patch
 
 import frappe
+from do_health.api import pharmacy as pharmacy_api
+from do_health.api.test_pharmacy import (
+	TEST_ITEM,
+	_company,
+	_ensure_item,
+	_ensure_medication,
+	_ensure_price,
+	_receive_stock,
+	_warehouse,
+)
 from frappe.tests import IntegrationTestCase
 from frappe.utils import nowdate, nowtime
 
@@ -682,6 +692,38 @@ class TestPrescriptionDispense(PrescriptionHelpers, IntegrationTestCase):
 		self.assertEqual(dispense.get_card_status([line(2, 2), line(1, 0)]), dispense.PARTIAL)
 		self.assertEqual(dispense.get_card_status([line(2, 0)]), dispense.NOT_DISPENSED)
 		self.assertEqual(dispense.get_card_status([line(None, None)]), "")
+
+
+class TestDispenseReadback(PrescriptionHelpers, IntegrationTestCase):
+	"""A row dispensed by do_health's pharmacy keeps its name and reports what was handed over."""
+
+	def setUp(self):
+		super().setUp()
+		company = _company()
+		self.warehouse = _warehouse(company)
+		self.item = _ensure_item(TEST_ITEM)
+		_ensure_price(self.item, 2.500)
+		_receive_stock(self.item, self.warehouse, 5, company)
+		self.medication = _ensure_medication(self.item)
+
+	def test_a_dispensed_row_survives_a_save_and_reads_its_quantity(self):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row(medication=self.medication)]), encounter=encounter.name)
+		ordered = api.submit_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+		pharmacy_api.submit_dispense(
+			{
+				"patient": encounter.patient,
+				"warehouse": self.warehouse,
+				"patient_encounter": encounter.name,
+				"lines": [
+					{"item_code": self.item, "qty": 1, "uom": "Nos", "verification": "Manual", "prescription_row": ordered[0]["name"]}
+				],
+			}
+		)
+		api.set_derma_prescriptions(payload=json.dumps([*ordered, self._row()], default=str), encounter=encounter.name)
+		rows = api.get_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+		self.assertEqual(rows[0]["name"], ordered[0]["name"])
+		self.assertEqual(rows[0]["dispensed_qty"], 1)
 
 
 class TestCancelPrescriptions(PrescriptionHelpers, IntegrationTestCase):

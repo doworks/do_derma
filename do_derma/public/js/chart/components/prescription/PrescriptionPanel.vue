@@ -337,9 +337,13 @@ function submitPrescription() {
 function cancelOrders(rows) {
   const message =
     rows.length === 1
-      ? __("Cancel the order for {0}? The row becomes editable again.").replace("{0}", rows[0].medication || rows[0].drug_name)
+      ? __("Cancel the order for {0}? The row becomes editable again.").replace(
+          "{0}",
+          rows[0].medication || rows[0].drug_name || rows[0].drug_code
+        )
       : __("Cancel {0} orders? The rows become editable again.").replace("{0}", rows.length)
-  frappe.confirm(message, () => emit("cancel", rows.map((row) => row.name)))
+  const warning = __("Delete the row, or it will be ordered again when the visit is completed.")
+  frappe.confirm(`${message} ${warning}`, () => emit("cancel", rows.map((row) => row.name)))
 }
 
 function removeRow(draft) {

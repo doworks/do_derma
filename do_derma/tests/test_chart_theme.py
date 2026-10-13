@@ -1514,6 +1514,14 @@ class TestPrescriptionOrders(TestCase):
 		self.assertIn("frappe.confirm(", cancel)
 		self.assertIn('emit("cancel", rows.map((row) => row.name))', cancel)
 
+	def test_cancel_warns_the_row_reorders_on_completion(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		cancel = script.split("function cancelOrders(rows)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("rows[0].medication || rows[0].drug_name || rows[0].drug_code", cancel)
+		self.assertIn("The row becomes editable again.", cancel)
+		self.assertIn("The rows become editable again.", cancel)
+		self.assertIn("Delete the row, or it will be ordered again when the visit is completed.", cancel)
+
 	def test_the_chart_cancels_through_the_endpoint(self):
 		chart = (CHART_DIR / "DermaChart.vue").read_text()
 		self.assertIn('@cancel="cancelPrescriptionOrders"', chart)

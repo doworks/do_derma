@@ -60,7 +60,8 @@ def get_card_status(lines: list[dict[str, Any]]) -> str:
 
 
 def ensure_not_dispensed(rows) -> None:
-	dispensed = dispensed_quantities([row.name for row in rows])
+	"""Refuse once anything is dispensed, reading past the snapshot so a dispense committed meanwhile counts."""
+	dispensed = dispensed_quantities([row.name for row in rows], for_update=True)
 	for row in rows:
 		if flt(dispensed.get(row.name)) > 0:
 			frappe.throw(
