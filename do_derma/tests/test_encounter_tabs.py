@@ -262,6 +262,19 @@ class TestOrderedPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		self.assertEqual(saved["drug_prescription"][0]["drug_name"], stored["drug_name"])
 		self.assertEqual(saved["drug_prescription"][0]["comment"], stored["comment"])
 
+	def test_an_ordered_row_keeps_its_name_across_saves(self):
+		"""The pharmacy links a dispense to the row name; a later save must not rename it."""
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)
+		ordered = api.submit_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+		api.set_derma_prescriptions(payload=json.dumps([*ordered, self._row()], default=str), encounter=encounter.name)
+		rows = frappe.get_all(
+			"Drug Prescription", {"parent": encounter.name}, ["name", "medication_request", "idx"], order_by="idx"
+		)
+		self.assertEqual(rows[0].name, ordered[0]["name"])
+		self.assertEqual([row.idx for row in rows], [1, 2])
+		self.assertIsNone(rows[1].medication_request)
+
 	def test_an_unknown_request_is_refused(self):
 		encounter = self._ordered_encounter()
 		with self.assertRaises(frappe.ValidationError):

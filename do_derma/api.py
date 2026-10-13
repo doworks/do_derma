@@ -2213,12 +2213,10 @@ def _drug_prescription_row(source: Any, allowed: set[str]) -> dict[str, Any]:
 	return {key: values.get(key) for key in allowed if key in values}
 
 
-def _merge_ordered_prescriptions(
-	existing: list[dict[str, Any]], incoming: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-	"""Rows already ordered as a Medication Request are kept as stored, ahead of the new ones."""
+def _merge_ordered_prescriptions(existing: list, incoming: list[dict[str, Any]]) -> list:
+	"""Rows already ordered keep their stored child document (and name), ahead of the new ones."""
 	ordered = [row for row in existing if row.get("medication_request")]
-	known = {row["medication_request"] for row in ordered}
+	known = {row.medication_request for row in ordered}
 	fresh = []
 	for row in incoming:
 		request = row.get("medication_request")
@@ -2236,7 +2234,10 @@ def _drug_prescription_rows(encounter_doc) -> list[dict[str, Any]]:
 	if not _has_field("Patient Encounter", "drug_prescription"):
 		return []
 	allowed = _drug_prescription_fields()
-	return [_drug_prescription_row(row, allowed) for row in encounter_doc.get("drug_prescription") or []]
+	return [
+		{**_drug_prescription_row(row, allowed), "name": row.name}
+		for row in encounter_doc.get("drug_prescription") or []
+	]
 
 
 def _get_assessment_diagnosis(encounter_doc) -> str:
@@ -3399,8 +3400,10 @@ def set_derma_prescriptions(payload=None, encounter=None, appointment=None, pati
 	_ensure_encounter_open(encounter_doc.name)
 	allowed = _drug_prescription_fields()
 	prescriptions = [_drug_prescription_row(row, allowed) for row in rows if isinstance(row, dict)]
-	prescriptions = _merge_ordered_prescriptions(_drug_prescription_rows(encounter_doc), prescriptions)
+	prescriptions = _merge_ordered_prescriptions(encounter_doc.get("drug_prescription") or [], prescriptions)
 	encounter_doc.set("drug_prescription", prescriptions)
+	for index, row in enumerate(encounter_doc.drug_prescription, start=1):
+		row.idx = index
 	if diagnosis is not None and _has_field("Patient Encounter", PRESCRIPTION_DIAGNOSIS_FIELD):
 		encounter_doc.set(PRESCRIPTION_DIAGNOSIS_FIELD, cstr(diagnosis).strip())
 	encounter_doc.save(ignore_permissions=True)
