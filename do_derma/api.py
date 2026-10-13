@@ -3437,7 +3437,7 @@ def cancel_derma_prescriptions(rows=None, encounter=None, appointment=None, pati
 	if not encounter_doc:
 		frappe.throw(_("No encounter found for this session."), frappe.ValidationError)
 	_ensure_encounter_open(encounter_doc.name)
-	names = _parse_payload(rows) or []
+	names = [] if rows in (None, "") else _parse_payload(rows)
 	if not isinstance(names, list):
 		frappe.throw(_("Rows must be a list."), frappe.ValidationError)
 	orders.cancel(encounter_doc, names)

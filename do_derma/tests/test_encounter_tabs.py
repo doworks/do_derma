@@ -729,3 +729,10 @@ class TestCancelPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		frappe.set_user(self._make_limited_user())
 		with self.assertRaises(frappe.PermissionError):
 			api.cancel_derma_prescriptions(encounter="does-not-matter")
+
+	def test_malformed_rows_cancel_nothing(self):
+		encounter, rows = self._ordered()
+		for bad in ("[bad", '"text"', "{}"):
+			with self.assertRaisesRegex(frappe.ValidationError, "Rows must be a list"):
+				api.cancel_derma_prescriptions(rows=bad, encounter=encounter.name)
+		self.assertEqual([self._request_status(row) for row in rows], [1, 1])
