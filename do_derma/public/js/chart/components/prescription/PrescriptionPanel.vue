@@ -390,6 +390,7 @@ function openNextField(draft) {
 }
 
 function startNextRow() {
+  if (!canEdit.value) return
   ensureTrailingDraft()
   openPicker.value = { key: drafts.value.at(-1).key, field: "medication" }
 }
@@ -439,7 +440,7 @@ async function applyMedication(draft, medication, picked = null) {
       dosage_form: defaults.dosage_form || "",
     }
     if (!drugCode && draft.linkedItems.length) openPicker.value = { key: draft.key, field: "drug_code" }
-    else if (!openPicker.value) openNextField(draft)
+    else if (!openPicker.value && !rowComponents[draft.key]?.hasFocusElsewhere()) openNextField(draft)
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn("Failed to apply medication defaults", error)

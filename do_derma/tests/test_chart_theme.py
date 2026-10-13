@@ -1109,7 +1109,7 @@ class TestPrescriptionPanelRestyle(TestCase):
 		self.assertIn("@mousedown.prevent", save)
 		self.assertLess(script.index(".commitPicker()"), script.index('emit("save"'))
 		_, row_script, _ = get_component_parts(PRESCRIPTION_ROW)
-		self.assertIn("defineExpose({ commitPicker, focusNotes })", row_script)
+		self.assertIn("defineExpose({ commitPicker, focusNotes, hasFocusElsewhere })", row_script)
 
 	def test_the_count_skips_rows_the_save_would_drop(self):
 		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
@@ -1573,12 +1573,24 @@ class TestPrescriptionAutoAdvance(TestCase):
 		self.assertIn('emit("advance")', change)
 		choose = script.split("function chooseItem(itemCode)", 1)[1].split("\n}", 1)[0]
 		self.assertIn('emit("advance")', choose)
-		self.assertIn("defineExpose({ commitPicker, focusNotes })", script)
+		self.assertIn("defineExpose({ commitPicker, focusNotes, hasFocusElsewhere })", script)
 
 	def test_advance_after_defaults_respects_an_open_picker(self):
 		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
 		apply = script.split("async function applyMedication", 1)[1].split("} catch", 1)[0]
-		self.assertIn("else if (!openPicker.value) openNextField(draft)", apply)
+		self.assertIn("else if (!openPicker.value && !rowComponents[draft.key]?.hasFocusElsewhere()) openNextField(draft)", apply)
+
+	def test_focus_moved_on_purpose_is_not_stolen(self):
+		_, row_script, _ = get_component_parts(PRESCRIPTION_ROW)
+		change = row_script.split("change: () => {", 1)[1].split("},", 1)[0]
+		self.assertIn("pickerHost?.contains(document.activeElement)", change)
+		focus = row_script.split("function hasFocusElsewhere()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("document.body", focus)
+		self.assertIn("rowElement.value.contains", focus)
+		self.assertIn("hasFocusElsewhere", row_script.split("defineExpose", 1)[1].split("\n", 1)[0])
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		start = script.split("function startNextRow()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("if (!canEdit.value) return", start)
 
 	def test_enter_in_notes_starts_the_next_row(self):
 		template, _, _ = get_component_parts(PRESCRIPTION_ROW)

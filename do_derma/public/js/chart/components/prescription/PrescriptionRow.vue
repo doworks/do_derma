@@ -199,7 +199,7 @@ function mountPicker(field) {
       change: () => {
         const value = control.get_value() || ""
         emit("update", field, value)
-        if (value) emit("advance")
+        if (value && pickerHost?.contains(document.activeElement)) emit("advance")
         else closePicker(field)
       },
     },
@@ -227,7 +227,13 @@ function focusNotes() {
   rowElement.value?.querySelector('[data-test="prescription-notes"]')?.focus()
 }
 
-defineExpose({ commitPicker, focusNotes })
+// True when the doctor moved focus to another control on purpose.
+function hasFocusElsewhere() {
+  const active = document.activeElement
+  return Boolean(active) && active !== document.body && !rowElement.value.contains(active)
+}
+
+defineExpose({ commitPicker, focusNotes, hasFocusElsewhere })
 
 function chooseItem(itemCode) {
   emit("update", "drug_code", itemCode)
