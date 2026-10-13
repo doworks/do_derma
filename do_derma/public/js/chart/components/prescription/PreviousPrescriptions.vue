@@ -16,11 +16,10 @@
         </li>
       </ul>
       <button
-        v-if="canRepeat"
         type="button"
         class="ghost small"
         data-test="prescription-previous-repeat"
-        :disabled="card.lines.every((line) => prescribed.includes(line.medication))"
+        :disabled="!canRepeat || card.lines.every((line) => prescribed.includes(line.medication))"
         @click="emit('repeat', card.lines)"
       >
         {{ __("Repeat") }}

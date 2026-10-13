@@ -1536,7 +1536,9 @@ class TestPreviousPrescriptions(TestCase):
 
 	def test_each_card_repeats_its_lines(self):
 		template, _, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
-		button = get_element(template, '<button\n        v-if="canRepeat"')
+		button = get_element(template, '<button\n        type="button"\n        class="ghost small"')
+		self.assertNotIn('v-if="canRepeat"', button)
+		self.assertIn('!canRepeat ||', button)
 		self.assertIn('data-test="prescription-previous-repeat"', button)
 		self.assertIn("emit('repeat', card.lines)", button)
 		self.assertIn("prescribed.includes(line.medication)", button)
