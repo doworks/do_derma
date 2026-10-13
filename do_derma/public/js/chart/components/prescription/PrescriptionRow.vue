@@ -188,7 +188,7 @@ function setPickerHost(element) {
 function mountPicker(field) {
   if (!pickerHost || !window.frappe?.ui?.form?.make_control) return
   pickerHost.innerHTML = ""
-  control = frappe.ui.form.make_control({
+  const linkControl = frappe.ui.form.make_control({
     parent: pickerHost,
     df: {
       fieldtype: "Link",
@@ -197,7 +197,8 @@ function mountPicker(field) {
       placeholder: __(LINK_OPTIONS[field]),
       only_select: 1,
       change: () => {
-        const value = control.get_value() || ""
+        if (linkControl !== control) return
+        const value = linkControl.get_value() || ""
         emit("update", field, value)
         if (value && pickerHost?.contains(document.activeElement)) emit("advance")
         else closePicker(field)
@@ -205,6 +206,7 @@ function mountPicker(field) {
     },
     render_input: true,
   })
+  control = linkControl
   const getSearchArgs = control.get_search_args.bind(control)
   control.get_search_args = (text) => {
     const args = getSearchArgs(text)

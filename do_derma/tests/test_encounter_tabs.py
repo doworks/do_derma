@@ -711,7 +711,7 @@ class TestCancelPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		self.assertEqual([self._request_status(row) for row in rows], [2, 2])
 
 	def test_a_cancelled_row_can_be_ordered_again(self):
-		encounter, rows = self._ordered(count=1)
+		encounter, _ = self._ordered(count=1)
 		api.cancel_derma_prescriptions(encounter=encounter.name)
 		api.submit_derma_prescriptions(encounter=encounter.name)
 		statuses = frappe.get_all("Medication Request", {"order_group": encounter.name}, pluck="docstatus")

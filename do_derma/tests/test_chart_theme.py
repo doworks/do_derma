@@ -1580,6 +1580,14 @@ class TestPrescriptionAutoAdvance(TestCase):
 		apply = script.split("async function applyMedication", 1)[1].split("} catch", 1)[0]
 		self.assertIn("else if (!openPicker.value && !rowComponents[draft.key]?.hasFocusElsewhere()) openNextField(draft)", apply)
 
+	def test_a_stale_control_cannot_overwrite_the_new_pick(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_ROW)
+		mount = script.split("function mountPicker(field)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("const linkControl = frappe.ui.form.make_control", mount)
+		self.assertIn("if (linkControl !== control) return", mount)
+		self.assertIn("linkControl.get_value()", mount)
+		self.assertIn("control = linkControl", mount)
+
 	def test_focus_moved_on_purpose_is_not_stolen(self):
 		_, row_script, _ = get_component_parts(PRESCRIPTION_ROW)
 		change = row_script.split("change: () => {", 1)[1].split("},", 1)[0]

@@ -329,7 +329,7 @@ function printPrescription() {
 function submitPrescription() {
   if (isDirty.value || !unorderedCount.value) return
   frappe.confirm(
-    __("Order {0} medications? Ordered rows can't be edited here.").replace("{0}", unorderedCount.value),
+    __("Order {0} medications? Ordered rows are locked until you cancel the order.").replace("{0}", unorderedCount.value),
     () => emit("submit")
   )
 }
