@@ -101,6 +101,7 @@
         :placeholder="readOnly ? '' : __('Notes')"
         :aria-label="__('Notes')"
         @input="emit('update', 'comment', $event.target.value)"
+        @keydown.enter.prevent="emit('notes-enter')"
       />
     </td>
     <td class="row-actions">
@@ -146,7 +147,7 @@ const props = defineProps({
   missing: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(["update", "open-picker", "close-picker", "choose-item", "pick-medication", "remove"])
+const emit = defineEmits(["update", "open-picker", "close-picker", "choose-item", "pick-medication", "remove", "advance", "notes-enter"])
 
 // Older rows carry only a drug name or item code.
 const medicationLabel = computed(() => {
@@ -196,8 +197,10 @@ function mountPicker(field) {
       placeholder: __(LINK_OPTIONS[field]),
       only_select: 1,
       change: () => {
-        emit("update", field, control.get_value() || "")
-        closePicker(field)
+        const value = control.get_value() || ""
+        emit("update", field, value)
+        if (value) emit("advance")
+        else closePicker(field)
       },
     },
     render_input: true,
@@ -220,11 +223,15 @@ async function commitPicker() {
   await control.parse_validate_and_set_in_model(control.get_input_value())
 }
 
-defineExpose({ commitPicker })
+function focusNotes() {
+  rowElement.value?.querySelector('[data-test="prescription-notes"]')?.focus()
+}
+
+defineExpose({ commitPicker, focusNotes })
 
 function chooseItem(itemCode) {
   emit("update", "drug_code", itemCode)
-  closePicker("drug_code")
+  emit("advance")
 }
 
 function chooseOtherMedication() {

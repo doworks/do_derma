@@ -1109,7 +1109,7 @@ class TestPrescriptionPanelRestyle(TestCase):
 		self.assertIn("@mousedown.prevent", save)
 		self.assertLess(script.index(".commitPicker()"), script.index('emit("save"'))
 		_, row_script, _ = get_component_parts(PRESCRIPTION_ROW)
-		self.assertIn("defineExpose({ commitPicker })", row_script)
+		self.assertIn("defineExpose({ commitPicker, focusNotes })", row_script)
 
 	def test_the_count_skips_rows_the_save_would_drop(self):
 		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
@@ -1555,3 +1555,37 @@ class TestPreviousPrescriptions(TestCase):
 		self.assertNotIn("previous:", script)
 		chart = (CHART_DIR / "DermaChart.vue").read_text()
 		self.assertNotIn("prescriptionPanel.previous", chart)
+
+
+class TestPrescriptionAutoAdvance(TestCase):
+	"""After each pick the next empty field opens; Enter in Notes starts the next medication."""
+
+	def test_the_next_empty_field_opens(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('const ADVANCE_FIELDS = ["dosage", "period"]', script)
+		advance = script.split("function openNextField(draft)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("ADVANCE_FIELDS.find((field) => !draft.values[field])", advance)
+		self.assertIn("focusNotes()", advance)
+
+	def test_a_pick_advances_instead_of_closing(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_ROW)
+		change = script.split("change: () => {", 1)[1].split("},", 1)[0]
+		self.assertIn('emit("advance")', change)
+		choose = script.split("function chooseItem(itemCode)", 1)[1].split("\n}", 1)[0]
+		self.assertIn('emit("advance")', choose)
+		self.assertIn("defineExpose({ commitPicker, focusNotes })", script)
+
+	def test_advance_after_defaults_respects_an_open_picker(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		apply = script.split("async function applyMedication", 1)[1].split("} catch", 1)[0]
+		self.assertIn("else if (!openPicker.value) openNextField(draft)", apply)
+
+	def test_enter_in_notes_starts_the_next_row(self):
+		template, _, _ = get_component_parts(PRESCRIPTION_ROW)
+		notes = template.split("<input", 1)[1].split("/>", 1)[0]
+		self.assertIn("@keydown.enter.prevent=\"emit('notes-enter')\"", notes)
+		panel, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('@notes-enter="startNextRow"', panel)
+		self.assertIn('@advance="openNextField(draft)"', panel)
+		start = script.split("function startNextRow()", 1)[1].split("\n}", 1)[0]
+		self.assertIn('field: "medication"', start)

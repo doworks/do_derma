@@ -156,6 +156,8 @@
           @update="(field, value) => updateField(draft, field, value)"
           @open-picker="(field) => (openPicker = { key: draft.key, field })"
           @close-picker="openPicker = null"
+          @advance="openNextField(draft)"
+          @notes-enter="startNextRow"
           :encounter="encounterName"
           @pick-medication="(pick) => pickMedication(draft, pick)"
           @choose-item="openItemChooser(draft)"
@@ -167,7 +169,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue"
+import { computed, nextTick, ref, watch } from "vue"
 import PrescriptionRow from "./PrescriptionRow.vue"
 import PreviousPrescriptions from "./PreviousPrescriptions.vue"
 import { getDispenseStatus, isDispensed } from "./dispense.js"
@@ -373,7 +375,23 @@ function pickMedication(draft, picked) {
   if (picked.drugCode) {
     Object.assign(draft, { warehouse: picked.warehouse, linkedItems: picked.items })
     draft.values.drug_code = picked.drugCode
+    openNextField(draft)
   }
+}
+
+const ADVANCE_FIELDS = ["dosage", "period"]
+
+// Opens the first empty picker after the medication, or moves to Notes once every pick is made.
+function openNextField(draft) {
+  if (!canEdit.value) return
+  const field = ADVANCE_FIELDS.find((field) => !draft.values[field])
+  openPicker.value = field ? { key: draft.key, field } : null
+  if (!field) nextTick(() => rowComponents[draft.key]?.focusNotes())
+}
+
+function startNextRow() {
+  ensureTrailingDraft()
+  openPicker.value = { key: drafts.value.at(-1).key, field: "medication" }
 }
 
 // A repeated line keeps its item only while the medication still links it, with today's stock.
@@ -421,6 +439,7 @@ async function applyMedication(draft, medication, picked = null) {
       dosage_form: defaults.dosage_form || "",
     }
     if (!drugCode && draft.linkedItems.length) openPicker.value = { key: draft.key, field: "drug_code" }
+    else if (!openPicker.value) openNextField(draft)
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn("Failed to apply medication defaults", error)
