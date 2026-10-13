@@ -1159,25 +1159,11 @@ class TestPrescriptionPanelRestyle(TestCase):
 		validation = script.split("const validationError", 1)[1].split("})", 1)[0]
 		self.assertNotIn("duplicate", validation)
 
-	def test_last_visit_medications_repeat_into_the_blank_row(self):
-		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
-		strip = get_element(template, '<div v-if="canEdit && !loading && previousRows.length"')
-		self.assertIn('data-test="prescription-repeat"', strip)
-		self.assertIn('class="chart-pill"', strip)
-		self.assertIn(':disabled="isPrescribed(row.medication)"', strip)
-		self.assertIn('data-test="prescription-repeat-all"', strip)
-		self.assertIn('__("Add all")', strip)
-		self.assertIn("previous: { type: Object, default: null }", script)
+	def test_repeating_a_line_fills_the_blank_row(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
 		repeat = script.split("function repeatRow(row)", 1)[1].split("\n}", 1)[0]
 		self.assertIn("ensureTrailingDraft()", repeat)
 		self.assertIn("VALUE_FIELDS.map", repeat)
-
-	def test_the_chart_keeps_the_previous_visit_across_saves(self):
-		chart = (CHART_DIR / "DermaChart.vue").read_text()
-		self.assertIn(':previous="prescriptionPanel.previous"', chart)
-		self.assertIn("prescriptionPanel.previous = response.message?.previous || null", chart)
-		save = chart.split("async function savePrescriptionPanel", 1)[1].split("\n}", 1)[0]
-		self.assertNotIn("previous", save)
 
 	def test_the_diagnosis_field_copies_from_the_assessment(self):
 		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
@@ -1532,3 +1518,38 @@ class TestPrescriptionOrders(TestCase):
 		chart = (CHART_DIR / "DermaChart.vue").read_text()
 		self.assertIn('@cancel="cancelPrescriptionOrders"', chart)
 		self.assertIn('method: "do_derma.api.cancel_derma_prescriptions"', chart)
+
+
+class TestPreviousPrescriptions(TestCase):
+	"""Earlier prescriptions as a scrolling strip of cards, five at a time, each repeatable."""
+
+	def test_cards_load_five_at_a_time(self):
+		template, script, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		self.assertIn("const PAGE_SIZE = 5", script)
+		self.assertIn('method: "do_derma.api.get_previous_prescriptions"', script)
+		self.assertIn('data-test="prescription-previous-more"', template)
+		self.assertIn('v-if="hasMore"', template)
+
+	def test_a_stale_page_is_dropped(self):
+		_, script, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		self.assertIn("if (token !== requestId) return", script)
+
+	def test_each_card_repeats_its_lines(self):
+		template, _, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		button = get_element(template, '<button\n        v-if="canRepeat"')
+		self.assertIn('data-test="prescription-previous-repeat"', button)
+		self.assertIn("emit('repeat', card.lines)", button)
+		self.assertIn("prescribed.includes(line.medication)", button)
+
+	def test_the_strip_scrolls_sideways(self):
+		_, _, style = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		self.assertIn("overflow-x: auto", get_rule_body(style, ".previous-prescriptions {"))
+
+	def test_the_panel_hosts_the_strip_instead_of_the_old_chips(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn("<PreviousPrescriptions", template)
+		self.assertIn('@repeat="(lines) => lines.forEach(repeatRow)"', template)
+		self.assertNotIn("repeat-strip", template)
+		self.assertNotIn("previous:", script)
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		self.assertNotIn("prescriptionPanel.previous", chart)

@@ -55,6 +55,13 @@
     </Teleport>
 
     <p v-if="errorText" class="error-text" role="alert" data-test="prescription-error">{{ errorText }}</p>
+    <PreviousPrescriptions
+      v-if="hasEncounter && !loading"
+      :encounter="encounterName"
+      :can-repeat="canEdit"
+      :prescribed="prescribedMedications"
+      @repeat="(lines) => lines.forEach(repeatRow)"
+    />
 
     <div v-if="hasEncounter && !loading" class="diagnosis-field">
       <div class="diagnosis-head">
@@ -156,38 +163,13 @@
         />
       </tbody>
     </table>
-
-    <div v-if="canEdit && !loading && previousRows.length" class="repeat-strip" data-test="prescription-repeat">
-      <span class="chart-label">{{ __("From {0} visit").replace("{0}", previousDate) }}</span>
-      <button
-        v-for="(row, index) in previousRows"
-        :key="index"
-        type="button"
-        class="chart-pill"
-        :data-tone="isPrescribed(row.medication) ? 'ok' : 'neutral'"
-        data-test="prescription-repeat-chip"
-        :disabled="isPrescribed(row.medication)"
-        @click="repeatRow(row)"
-      >
-        <i v-if="isPrescribed(row.medication)" class="fa-solid fa-check" aria-hidden="true"></i>
-        {{ row.medication }}
-      </button>
-      <button
-        type="button"
-        class="ghost small"
-        data-test="prescription-repeat-all"
-        :disabled="previousRows.every((row) => isPrescribed(row.medication))"
-        @click="previousRows.forEach(repeatRow)"
-      >
-        {{ __("Add all") }}
-      </button>
-    </div>
   </section>
 </template>
 
 <script setup>
 import { computed, ref, watch } from "vue"
 import PrescriptionRow from "./PrescriptionRow.vue"
+import PreviousPrescriptions from "./PreviousPrescriptions.vue"
 import { getDispenseStatus, isDispensed } from "./dispense.js"
 
 const __ = window.__ || ((text) => text)
@@ -203,7 +185,6 @@ const props = defineProps({
   hasEncounter: { type: Boolean, default: false },
   encounterName: { type: String, default: "" },
   rows: { type: Array, default: () => [] },
-  previous: { type: Object, default: null },
   savedDiagnosis: { type: String, default: "" },
   assessmentDiagnosis: { type: String, default: "" },
   readOnly: { type: Boolean, default: false },
@@ -235,8 +216,9 @@ const isDiagnosisDirty = computed(() => {
 })
 const isDirty = computed(() => JSON.stringify(getPayload()) !== snapshot.value || isDiagnosisDirty.value)
 
-const previousRows = computed(() => props.previous?.drug_prescription || [])
-const previousDate = computed(() => frappe.datetime.str_to_user(props.previous?.encounter_date))
+const prescribedMedications = computed(() =>
+  [...orderedRows.value.map((row) => row.medication), ...drafts.value.map((draft) => draft.values.medication)].filter(Boolean)
+)
 
 const statusPill = computed(() => {
   if (!props.hasEncounter) return null
@@ -321,9 +303,7 @@ function isTrailing(draft) {
 }
 
 function isPrescribed(medication) {
-  return [...orderedRows.value, ...drafts.value.map((draft) => draft.values)].some(
-    (row) => row.medication === medication
-  )
+  return prescribedMedications.value.includes(medication)
 }
 
 // Fills the blank trailing row with a last-visit line, then adds the next blank row.
@@ -575,18 +555,6 @@ async function save() {
   margin-top: 3px;
   color: var(--chart-muted);
   font-size: 12px;
-}
-
-.repeat-strip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.repeat-strip .chart-pill:disabled {
-  cursor: default;
 }
 
 .ordered-cell {

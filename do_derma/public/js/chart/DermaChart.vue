@@ -302,7 +302,6 @@
             :has-encounter="Boolean(prescriptionPanel.encounter)"
             :encounter-name="prescriptionPanel.encounter"
             :rows="prescriptionPanel.rows"
-            :previous="prescriptionPanel.previous"
             :saved-diagnosis="prescriptionPanel.diagnosis"
             :assessment-diagnosis="prescriptionPanel.assessmentDiagnosis"
             :read-only="isEncounterLocked"
@@ -749,7 +748,6 @@ const prescriptionPanel = reactive({
   error: "",
   encounter: "",
   rows: [],
-  previous: null,
   diagnosis: "",
   assessmentDiagnosis: "",
 })
@@ -2203,7 +2201,6 @@ async function loadPrescriptionPanel(force = false) {
   try {
     const response = await frappe.call({ method: "do_derma.api.get_derma_prescriptions", args: contextArgs() })
     applyPrescriptionResponse(response.message)
-    prescriptionPanel.previous = response.message?.previous || null
     loadedTabs.prescriptions = true
   } catch (error) {
     prescriptionPanel.error = serverErrorText(error, __("Unable to load prescriptions."))
