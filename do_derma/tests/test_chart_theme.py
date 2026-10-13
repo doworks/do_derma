@@ -1601,3 +1601,29 @@ class TestPrescriptionAutoAdvance(TestCase):
 		self.assertIn('@advance="openNextField(draft)"', panel)
 		start = script.split("function startNextRow()", 1)[1].split("\n}", 1)[0]
 		self.assertIn('field: "medication"', start)
+
+
+class TestAssessmentClear(TestCase):
+	"""Clear note and Clear AI confirm, then go through one chart call."""
+
+	def test_clear_note_sits_in_the_header_while_editing(self):
+		template, script, _ = get_component_parts(ASSESSMENT_DIR / "AssessmentPanel.vue")
+		button = get_element(template, '<button\n          v-if="editMode && isFilled"')
+		self.assertIn('data-test="assessment-clear"', button)
+		self.assertIn('"clear"', script.split("defineEmits(", 1)[1].split(")", 1)[0])
+		clear = script.split("function clearNote()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("frappe.confirm(", clear)
+
+	def test_clear_ai_sits_in_the_scribe_result(self):
+		template, script, _ = get_component_parts(ASSESSMENT_DIR / "VoiceScribe.vue")
+		head = get_element(template, '<div class="voice-result-head">')
+		self.assertIn('data-test="voice-clear"', head)
+		clear = script.split("function clearAi()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("frappe.confirm(", clear)
+		self.assertIn("result.value = null", clear)
+
+	def test_the_chart_clears_through_one_endpoint(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		self.assertIn("@clear=\"clearAssessment('note')\"", chart)
+		self.assertIn("@clear=\"clearAssessment('ai')\"", chart)
+		self.assertIn('method: "do_derma.api.clear_derma_assessment"', chart)

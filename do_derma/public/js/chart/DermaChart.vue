@@ -101,8 +101,10 @@
                   :saved="savedVoiceSummary"
                   @fill="applyVoiceNote"
                   @refined="applyRefinedNote"
+                  @clear="clearAssessment('ai')"
                 />
                 <AssessmentPanel
+                  @clear="clearAssessment('note')"
                   :mode="shownAssessmentMode"
                   :documented-mode="assessmentPanel.mode"
                   :available-modes="assessmentPanel.availableModes"
@@ -2062,6 +2064,26 @@ async function saveAssessment({ payload, mode }) {
     if (loadedTabs.prescriptions) loadPrescriptionPanel(true)
   } catch (error) {
     assessmentPanel.error = serverErrorText(error, __("The assessment could not be saved."))
+    frappe.show_alert({ message: assessmentPanel.error, indicator: "red" })
+  } finally {
+    assessmentPanel.saving = false
+  }
+}
+
+async function clearAssessment(scope) {
+  assessmentPanel.saving = true
+  assessmentPanel.error = ""
+  try {
+    const response = await frappe.call({
+      method: "do_derma.api.clear_derma_assessment",
+      args: { ...contextArgs(), scope },
+    })
+    applyAssessmentResponse(response.message || {})
+    assessmentPanel.editing = scope === "note"
+    if (loadedTabs.prescriptions) loadPrescriptionPanel(true)
+    frappe.show_alert({ message: scope === "ai" ? __("AI output cleared") : __("Note cleared"), indicator: "green" })
+  } catch (error) {
+    assessmentPanel.error = serverErrorText(error, __("The assessment could not be cleared."))
     frappe.show_alert({ message: assessmentPanel.error, indicator: "red" })
   } finally {
     assessmentPanel.saving = false

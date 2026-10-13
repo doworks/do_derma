@@ -87,6 +87,15 @@
         >
           {{ __("Arabic note") }}
         </button>
+        <button
+          type="button"
+          class="ghost small"
+          data-test="voice-clear"
+          :title="__('Remove the AI diagnosis, Arabic note, patient advice and transcript')"
+          @click="clearAi"
+        >
+          {{ __("Clear AI") }}
+        </button>
       </div>
       <div v-if="openExtra === 'followup'" class="voice-followups">
         <div v-if="summary.followup_en">
@@ -131,10 +140,20 @@ const props = defineProps({
   // The diagnosis, ICD-10, follow-up and Arabic note saved on the encounter by an earlier dictation.
   saved: { type: Object, default: null },
 })
-const emit = defineEmits(["fill", "refined"])
+const emit = defineEmits(["fill", "refined", "clear"])
 
 const instruction = ref("")
 const refining = ref(false)
+
+function clearAi() {
+  frappe.confirm(
+    __("Clear the AI diagnosis, Arabic note, patient advice and transcript? The note itself stays. This cannot be undone."),
+    () => {
+      result.value = null
+      emit("clear")
+    }
+  )
+}
 
 async function refine() {
   refining.value = true
