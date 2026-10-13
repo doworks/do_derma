@@ -24,7 +24,7 @@ from do_derma.config.marker_size import (
 )
 from do_derma.consumables import marks as consumable_marks
 from do_derma.consumables import procedures as consumable_procedures
-from do_derma.prescriptions import medications
+from do_derma.prescriptions import dispense, medications
 from do_derma.printing import pages
 from do_derma.schema import COMPLETION_OVERRIDE_FIELD, PRESCRIPTION_DIAGNOSIS_FIELD
 from do_derma.settings import (
@@ -2234,10 +2234,9 @@ def _drug_prescription_rows(encounter_doc) -> list[dict[str, Any]]:
 	if not _has_field("Patient Encounter", "drug_prescription"):
 		return []
 	allowed = _drug_prescription_fields()
-	return [
-		{**_drug_prescription_row(row, allowed), "name": row.name}
-		for row in encounter_doc.get("drug_prescription") or []
-	]
+	rows = encounter_doc.get("drug_prescription") or []
+	quantities = dispense.get_quantities(rows)
+	return [{**_drug_prescription_row(row, allowed), "name": row.name, **quantities[row.name]} for row in rows]
 
 
 def _get_assessment_diagnosis(encounter_doc) -> str:

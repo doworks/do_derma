@@ -617,3 +617,45 @@ class TestCompletionMessages(DermaTestHelpers, IntegrationTestCase):
 
 		self.assertIsNone(result["invoice"])
 		self.assertIn("No item price found", result["invoice_error"] or "")
+
+
+class TestPrescriptionDispense(PrescriptionHelpers, IntegrationTestCase):
+	"""Each row reports what the pharmacy has handed over, net of returns."""
+
+	def _saved_row(self):
+		encounter = self._make_encounter(self._make_patient())
+		row = api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)[
+			"drug_prescription"
+		][0]
+		return encounter, row
+
+	def test_an_undispensed_row_reads_zero(self):
+		_, row = self._saved_row()
+		self.assertEqual(row["dispensed_qty"], 0)
+		self.assertGreater(row["prescribed_qty"], 0)
+
+	def test_each_row_reads_its_dispensed_quantity(self):
+		encounter, row = self._saved_row()
+		with patch("do_derma.prescriptions.dispense.dispensed_quantities", return_value={row["name"]: 2.0}):
+			reloaded = api.get_derma_prescriptions(encounter=encounter.name)["drug_prescription"][0]
+		self.assertEqual(reloaded["dispensed_qty"], 2.0)
+
+	def test_a_line_hidden_from_the_pharmacy_reports_no_quantities(self):
+		from do_derma.prescriptions import dispense
+
+		row = frappe._dict(name="legacy", custom_hide_from_pharmacy=1)
+		self.assertEqual(
+			dispense.get_quantities([row])["legacy"], {"prescribed_qty": None, "dispensed_qty": None}
+		)
+
+	def test_card_status(self):
+		from do_derma.prescriptions import dispense
+
+		def line(prescribed, dispensed):
+			return {"prescribed_qty": prescribed, "dispensed_qty": dispensed}
+
+		self.assertEqual(dispense.get_card_status([line(2, 2), line(1, 1)]), dispense.DISPENSED)
+		self.assertEqual(dispense.get_card_status([line(2, 1)]), dispense.PARTIAL)
+		self.assertEqual(dispense.get_card_status([line(2, 2), line(1, 0)]), dispense.PARTIAL)
+		self.assertEqual(dispense.get_card_status([line(2, 0)]), dispense.NOT_DISPENSED)
+		self.assertEqual(dispense.get_card_status([line(None, None)]), "")
