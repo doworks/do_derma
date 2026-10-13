@@ -35,6 +35,7 @@ from do_derma.settings import (
 	get_readiness_settings,
 )
 
+ASSESSMENT_CLEARERS = {"note": assessment.clear_notes, "ai": voice.clear_ai_output}
 UNINSTALLED_APP_MESSAGE = re.compile(r"App ([a-z0-9_]+) is not installed", re.IGNORECASE)
 
 DERMA_FINDING_FIELDS = [
@@ -3337,6 +3338,24 @@ def set_derma_assessment_mode(mode, encounter=None, appointment=None, patient=No
 	_ensure_encounter_open(encounter_doc.name)
 
 	assessment.stamp_mode(encounter_doc, mode)
+	encounter_doc.save(ignore_permissions=True)
+	return get_derma_assessment(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
+def clear_derma_assessment(scope, encounter=None, appointment=None, patient=None):
+	"""Empty the note in every format, or the voice scribe's side outputs."""
+	_ensure_clinical_access()
+	clear = ASSESSMENT_CLEARERS.get(scope)
+	if not clear:
+		frappe.throw(_("Unknown clear scope {0}.").format(scope), frappe.ValidationError)
+	encounter_doc = _resolve_patient_encounter_doc(
+		encounter=encounter, appointment=appointment, patient=patient, ptype="write"
+	)
+	if not encounter_doc:
+		frappe.throw(_("No encounter found for this session."), frappe.DoesNotExistError)
+	_ensure_encounter_open(encounter_doc.name)
+	clear(encounter_doc)
 	encounter_doc.save(ignore_permissions=True)
 	return get_derma_assessment(encounter=encounter_doc.name)
 
