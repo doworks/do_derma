@@ -1550,12 +1550,41 @@ class TestPreviousPrescriptions(TestCase):
 
 	def test_each_card_repeats_its_lines(self):
 		template, _, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
-		button = get_element(template, '<button\n        type="button"\n        class="ghost small"')
+		button = get_element(template, '<button\n          type="button"\n          class="previous-repeat"')
 		self.assertNotIn('v-if="canRepeat"', button)
 		self.assertIn('!canRepeat ||', button)
 		self.assertIn('data-test="prescription-previous-repeat"', button)
 		self.assertIn("emit('repeat', card.lines)", button)
 		self.assertIn("prescribed.includes(line.medication)", button)
+		self.assertIn(":aria-label=\"__('Repeat these medications')\"", button)
+
+	def test_each_line_shows_whether_the_pharmacy_dispensed_it(self):
+		template, script, style = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		line = get_element(template, '<li\n          v-for="(line, index) in card.lines"')
+		self.assertIn(':data-status="line.status"', line)
+		self.assertIn(':title="getLineTitle(line)"', line)
+		self.assertIn("STATUS_ICONS[line.status]", line)
+		self.assertIn('<span class="sr-only">{{ __(line.status) }}</span>', line)
+		for status in ("Dispensed", "Partially dispensed", "Not dispensed"):
+			self.assertIn(f'"{status}"', script.split("const STATUS_ICONS", 1)[1].split("}", 1)[0])
+		self.assertIn("var(--chart-ok-text)", style)
+		self.assertIn("var(--chart-caution-text)", style)
+		self.assertNotIn("card.status", template)
+
+	def test_the_summary_card_leads_the_strip(self):
+		template, script, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		summary = get_element(template, '<article\n      v-if="summary?.lines"')
+		self.assertIn('data-test="prescription-previous-summary"', summary)
+		self.assertIn('role="progressbar"', summary)
+		self.assertIn("dispensedPercent", summary)
+		self.assertLess(template.index("prescription-previous-summary"), template.index("prescription-previous-card"))
+		self.assertIn("Math.round((summary.value.dispensed / summary.value.lines) * 100)", script)
+		self.assertIn("if (!start) summary.value = page.summary || null", script)
+
+	def test_cards_are_compact(self):
+		_, _, style = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		self.assertIn("flex: 0 0 180px", get_rule_body(style, ".previous-card {"))
+		self.assertIn("text-overflow: ellipsis", get_rule_body(style, ".previous-medication {"))
 
 	def test_the_strip_scrolls_sideways(self):
 		_, _, style = get_component_parts(PREVIOUS_PRESCRIPTIONS)
