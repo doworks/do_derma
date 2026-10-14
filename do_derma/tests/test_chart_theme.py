@@ -1583,7 +1583,10 @@ class TestPreviousPrescriptions(TestCase):
 
 	def test_cards_are_compact(self):
 		_, _, style = get_component_parts(PREVIOUS_PRESCRIPTIONS)
-		self.assertIn("flex: 0 0 180px", get_rule_body(style, ".previous-card {"))
+		card = get_rule_body(style, ".previous-card {")
+		self.assertIn("flex: 0 0 180px", card)
+		# A flex item's automatic minimum is its widest unbroken line, which would stretch the card.
+		self.assertIn("min-width: 0", card)
 		self.assertIn("text-overflow: ellipsis", get_rule_body(style, ".previous-medication {"))
 
 	def test_the_strip_scrolls_sideways(self):

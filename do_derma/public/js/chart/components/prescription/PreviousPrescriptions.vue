@@ -147,6 +147,7 @@ function getLineTitle(line) {
   flex: 0 0 180px;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
   padding: 6px 8px;
   border: 1px solid var(--chart-border);
   border-radius: 8px;
