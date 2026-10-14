@@ -238,7 +238,28 @@ class TestPreviousPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		cards = api.get_previous_prescriptions(encounter=self._make_encounter(patient).name)["cards"]
 		self.assertEqual(len(cards), 1)
 		self.assertEqual([line["drug_name"] for line in cards[0]["lines"]], ["Doxycycline", "Adapalene"])
-		self.assertEqual(cards[0]["status"], "Not dispensed")
+		self.assertEqual([line["status"] for line in cards[0]["lines"]], ["Not dispensed", "Not dispensed"])
+
+	def test_the_first_page_summarises_every_previous_line(self):
+		patient = self._make_patient()
+		for index in range(6):
+			self._visit_with(patient, f"Drug {index}")
+		current = self._make_encounter(patient)
+		first = api.get_previous_prescriptions(encounter=current.name)
+		self.assertEqual(first["summary"], {"lines": 6, "dispensed": 0, "partial": 0})
+		self.assertNotIn("summary", api.get_previous_prescriptions(encounter=current.name, start=5))
+
+	def test_a_migrated_visit_counts_as_dispensed(self):
+		if not frappe.get_meta("Drug Prescription").has_field("custom_hide_from_pharmacy"):
+			self.skipTest("This site has no migrated prescriptions.")
+		patient = self._make_patient()
+		legacy = self._visit_with(patient, "Tretinoin")
+		frappe.db.set_value(
+			"Drug Prescription", {"parent": legacy.name}, "custom_hide_from_pharmacy", 1
+		)
+		page = api.get_previous_prescriptions(encounter=self._make_encounter(patient).name)
+		self.assertEqual(page["cards"][0]["lines"][0]["status"], "Dispensed")
+		self.assertEqual(page["summary"], {"lines": 1, "dispensed": 1, "partial": 0})
 
 	def test_the_current_and_cancelled_visits_are_skipped(self):
 		patient = self._make_patient()
@@ -673,25 +694,28 @@ class TestPrescriptionDispense(PrescriptionHelpers, IntegrationTestCase):
 			reloaded = api.get_derma_prescriptions(encounter=encounter.name)["drug_prescription"][0]
 		self.assertEqual(reloaded["dispensed_qty"], 2.0)
 
-	def test_a_line_hidden_from_the_pharmacy_reports_no_quantities(self):
+	def test_a_migrated_line_reads_as_dispensed(self):
+		"""The old pharmacy handled every line the migration hid, so it counts as handed over."""
 		from do_derma.prescriptions import dispense
 
-		row = frappe._dict(name="legacy", custom_hide_from_pharmacy=1)
-		self.assertEqual(
-			dispense.get_quantities([row])["legacy"], {"prescribed_qty": None, "dispensed_qty": None}
-		)
+		row = frappe._dict(name="legacy", custom_hide_from_pharmacy=1, dosage=None, period=None)
+		quantities = dispense.get_quantities([row])["legacy"]
+		self.assertEqual(quantities["dispensed_qty"], quantities["prescribed_qty"])
+		self.assertGreater(quantities["dispensed_qty"], 0)
 
-	def test_card_status(self):
+	def test_line_status(self):
 		from do_derma.prescriptions import dispense
 
-		def line(prescribed, dispensed):
-			return {"prescribed_qty": prescribed, "dispensed_qty": dispensed}
+		self.assertEqual(dispense.get_line_status(2, 2), dispense.DISPENSED)
+		self.assertEqual(dispense.get_line_status(2, 3), dispense.DISPENSED)
+		self.assertEqual(dispense.get_line_status(2, 1), dispense.PARTIAL)
+		self.assertEqual(dispense.get_line_status(2, 0), dispense.NOT_DISPENSED)
 
-		self.assertEqual(dispense.get_card_status([line(2, 2), line(1, 1)]), dispense.DISPENSED)
-		self.assertEqual(dispense.get_card_status([line(2, 1)]), dispense.PARTIAL)
-		self.assertEqual(dispense.get_card_status([line(2, 2), line(1, 0)]), dispense.PARTIAL)
-		self.assertEqual(dispense.get_card_status([line(2, 0)]), dispense.NOT_DISPENSED)
-		self.assertEqual(dispense.get_card_status([line(None, None)]), "")
+	def test_summary_counts_lines_by_status(self):
+		from do_derma.prescriptions import dispense
+
+		statuses = [dispense.DISPENSED, dispense.DISPENSED, dispense.PARTIAL, dispense.NOT_DISPENSED]
+		self.assertEqual(dispense.get_summary(statuses), {"lines": 4, "dispensed": 2, "partial": 1})
 
 
 class TestDispenseReadback(PrescriptionHelpers, IntegrationTestCase):

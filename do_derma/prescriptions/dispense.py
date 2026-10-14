@@ -31,32 +31,35 @@ NOT_DISPENSED = "Not dispensed"
 
 
 def is_tracked(row) -> bool:
-	"""Migrated lines the old pharmacy handled have no dispense records to read."""
+	"""Migrated lines the old pharmacy handled have no dispense records; they count as handed over."""
 	return not row.get(HIDE_FROM_PHARMACY_FIELD)
 
 
-def get_quantities(rows) -> dict[str, dict[str, float | None]]:
+def get_quantities(rows) -> dict[str, dict[str, float]]:
 	"""Prescribed and net dispensed qty per Drug Prescription row name."""
-	dispensed = dispensed_quantities([row.name for row in rows])
-	return {
-		row.name: {
-			"prescribed_qty": prescription_quantity(row) if is_tracked(row) else None,
-			"dispensed_qty": flt(dispensed.get(row.name)) if is_tracked(row) else None,
-		}
-		for row in rows
-	}
+	dispensed = dispensed_quantities([row.name for row in rows if is_tracked(row)])
+	quantities = {}
+	for row in rows:
+		prescribed = prescription_quantity(row)
+		given = flt(dispensed.get(row.name)) if is_tracked(row) else prescribed
+		quantities[row.name] = {"prescribed_qty": prescribed, "dispensed_qty": given}
+	return quantities
 
 
-def get_card_status(lines: list[dict[str, Any]]) -> str:
-	tracked = [line for line in lines if line["dispensed_qty"] is not None]
-	if not tracked:
-		return ""
-	given = [line["dispensed_qty"] > 0 for line in tracked]
-	if not any(given):
+def get_line_status(prescribed: float, dispensed: float) -> str:
+	if dispensed <= 0:
 		return NOT_DISPENSED
-	if all(given) and all(line["dispensed_qty"] + 0.0001 >= line["prescribed_qty"] for line in tracked):
+	if dispensed + 0.0001 >= prescribed:
 		return DISPENSED
 	return PARTIAL
+
+
+def get_summary(statuses: list[str]) -> dict[str, int]:
+	return {
+		"lines": len(statuses),
+		"dispensed": statuses.count(DISPENSED),
+		"partial": statuses.count(PARTIAL),
+	}
 
 
 def ensure_not_dispensed(rows) -> None:
@@ -72,9 +75,9 @@ def ensure_not_dispensed(rows) -> None:
 			)
 
 
-def get_previous_cards(encounter_doc, start: int, limit: int) -> dict[str, Any]:
-	"""The patient's other visits that prescribed a medication, newest first, one card each."""
-	encounters = frappe.get_all(
+def get_previous_encounters(encounter_doc, start: int = 0, page_length: int = 0) -> list:
+	"""The patient's other visits that prescribed a medication, newest first."""
+	return frappe.get_all(
 		"Patient Encounter",
 		filters=[
 			["patient", "=", encounter_doc.patient],
@@ -83,19 +86,36 @@ def get_previous_cards(encounter_doc, start: int, limit: int) -> dict[str, Any]:
 			["status", "!=", "Cancelled"],
 			["Drug Prescription", "medication", "is", "set"],
 		],
+		# `creation` is selected because DISTINCT needs every ORDER BY column.
 		fields=["name", "encounter_date", "practitioner_name", "creation"],
 		order_by="encounter_date desc, creation desc",
 		limit_start=start,
-		limit_page_length=limit + 1,
+		limit_page_length=page_length,
 		distinct=True,
 	)
+
+
+def get_previous_cards(encounter_doc, start: int, limit: int) -> dict[str, Any]:
+	"""One card per earlier visit; the first page also summarises every earlier line."""
+	encounters = get_previous_encounters(encounter_doc, start, limit + 1)
 	page = encounters[:limit]
 	rows = get_card_rows([encounter.name for encounter in page])
 	quantities = get_quantities(rows)
-	return {
+	result = {
 		"cards": [get_card(encounter, rows, quantities) for encounter in page],
 		"has_more": len(encounters) > limit,
 	}
+	if not start:
+		result["summary"] = get_previous_summary(encounter_doc)
+	return result
+
+
+def get_previous_summary(encounter_doc) -> dict[str, int]:
+	rows = get_card_rows([encounter.name for encounter in get_previous_encounters(encounter_doc)])
+	quantities = get_quantities(rows).values()
+	return get_summary(
+		[get_line_status(item["prescribed_qty"], item["dispensed_qty"]) for item in quantities]
+	)
 
 
 def get_card_rows(encounters: list[str]) -> list:
@@ -118,15 +138,18 @@ def get_card_rows(encounters: list[str]) -> list:
 
 
 def get_card(encounter, rows: list, quantities: dict) -> dict[str, Any]:
-	lines = [
-		{**{key: row.get(key) for key in LINE_FIELDS}, **quantities[row.name]}
-		for row in rows
-		if row.parent == encounter.name
-	]
+	lines = [get_line(row, quantities[row.name]) for row in rows if row.parent == encounter.name]
 	return {
 		"encounter": encounter.name,
 		"encounter_date": encounter.encounter_date,
 		"practitioner_name": encounter.practitioner_name,
-		"status": get_card_status(lines),
 		"lines": lines,
+	}
+
+
+def get_line(row, quantity: dict[str, float]) -> dict[str, Any]:
+	return {
+		**{key: row.get(key) for key in LINE_FIELDS},
+		**quantity,
+		"status": get_line_status(quantity["prescribed_qty"], quantity["dispensed_qty"]),
 	}
