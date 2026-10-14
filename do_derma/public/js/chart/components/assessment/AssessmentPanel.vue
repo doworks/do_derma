@@ -19,6 +19,16 @@
           {{ __("Print") }}
         </button>
         <button
+          v-if="editMode && isFilled"
+          type="button"
+          class="ghost small"
+          data-test="assessment-clear"
+          :disabled="saving"
+          @click="clearNote"
+        >
+          {{ __("Clear note") }}
+        </button>
+        <button
           v-if="!editMode && canEdit"
           type="button"
           class="primary small"
@@ -185,7 +195,11 @@ const props = defineProps({
   modeLocked: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(["request-edit", "save", "advice-toggled", "advice-language", "switch-mode", "dirty"])
+const emit = defineEmits(["request-edit", "save", "advice-toggled", "advice-language", "switch-mode", "dirty", "clear"])
+
+function clearNote() {
+  frappe.confirm(__("Clear the note in every format? This cannot be undone."), () => emit("clear"))
+}
 
 // Patient advice prints only when the doctor opts in - the box is a field on the
 // encounter (Allow on Submit), so the choice survives and shows on the form too.

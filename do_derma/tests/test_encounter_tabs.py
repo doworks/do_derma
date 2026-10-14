@@ -4,6 +4,16 @@ import json
 from unittest.mock import patch
 
 import frappe
+from do_health.api import pharmacy as pharmacy_api
+from do_health.api.test_pharmacy import (
+	TEST_ITEM,
+	_company,
+	_ensure_item,
+	_ensure_medication,
+	_ensure_price,
+	_receive_stock,
+	_warehouse,
+)
 from frappe.tests import IntegrationTestCase
 from frappe.utils import nowdate, nowtime
 
@@ -72,28 +82,6 @@ class TestDermaPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 
 	def _prescribe(self, encounter, drug_name):
 		api.set_derma_prescriptions(payload=json.dumps([self._row(drug_name=drug_name)]), encounter=encounter.name)
-
-	def test_previous_comes_from_the_last_visit_with_medications(self):
-		patient = self._make_patient()
-		self._prescribe(self._make_encounter(patient), "Doxycycline")
-		self._make_encounter(patient)
-		current = self._make_encounter(patient)
-		previous = api.get_derma_prescriptions(encounter=current.name)["previous"]
-		self.assertEqual([row["drug_name"] for row in previous["drug_prescription"]], ["Doxycycline"])
-		self.assertTrue(previous["encounter_date"])
-
-	def test_previous_skips_the_current_and_cancelled_visits(self):
-		patient = self._make_patient()
-		cancelled = self._make_encounter(patient)
-		self._prescribe(cancelled, "Isotretinoin")
-		frappe.db.set_value("Patient Encounter", cancelled.name, "status", "Cancelled")
-		current = self._make_encounter(patient)
-		self._prescribe(current, "Hydrocortisone")
-		self.assertIsNone(api.get_derma_prescriptions(encounter=current.name)["previous"])
-
-	def test_a_first_visit_has_no_previous(self):
-		current = self._make_encounter(self._make_patient())
-		self.assertIsNone(api.get_derma_prescriptions(encounter=current.name)["previous"])
 
 	def test_the_printout_lists_each_saved_medication(self):
 		patient = self._make_patient()
@@ -224,6 +212,72 @@ class TestDermaPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		self.assertEqual(chart["prescription_count"], 0)
 
 
+class TestPreviousPrescriptions(PrescriptionHelpers, IntegrationTestCase):
+	"""One card per earlier visit that prescribed, newest first, five at a time."""
+
+	def _visit_with(self, patient, *drug_names):
+		encounter = self._make_encounter(patient)
+		rows = [self._row(drug_name=name) for name in drug_names]
+		api.set_derma_prescriptions(payload=json.dumps(rows), encounter=encounter.name)
+		return encounter
+
+	def test_cards_page_newest_first(self):
+		patient = self._make_patient()
+		visits = [self._visit_with(patient, f"Drug {index}") for index in range(6)]
+		current = self._make_encounter(patient)
+		first = api.get_previous_prescriptions(encounter=current.name)
+		second = api.get_previous_prescriptions(encounter=current.name, start=5)
+		self.assertEqual((len(first["cards"]), first["has_more"]), (5, True))
+		self.assertEqual((len(second["cards"]), second["has_more"]), (1, False))
+		shown = [card["encounter"] for card in first["cards"] + second["cards"]]
+		self.assertEqual(shown, [visit.name for visit in reversed(visits)])
+
+	def test_a_visit_with_two_rows_is_one_card(self):
+		patient = self._make_patient()
+		self._visit_with(patient, "Doxycycline", "Adapalene")
+		cards = api.get_previous_prescriptions(encounter=self._make_encounter(patient).name)["cards"]
+		self.assertEqual(len(cards), 1)
+		self.assertEqual([line["drug_name"] for line in cards[0]["lines"]], ["Doxycycline", "Adapalene"])
+		self.assertEqual([line["status"] for line in cards[0]["lines"]], ["Not dispensed", "Not dispensed"])
+
+	def test_the_first_page_summarises_every_previous_line(self):
+		patient = self._make_patient()
+		for index in range(6):
+			self._visit_with(patient, f"Drug {index}")
+		current = self._make_encounter(patient)
+		first = api.get_previous_prescriptions(encounter=current.name)
+		self.assertEqual(first["summary"], {"lines": 6, "dispensed": 0, "partial": 0})
+		self.assertNotIn("summary", api.get_previous_prescriptions(encounter=current.name, start=5))
+
+	def test_a_migrated_visit_counts_as_dispensed(self):
+		if not frappe.get_meta("Drug Prescription").has_field("custom_hide_from_pharmacy"):
+			self.skipTest("This site has no migrated prescriptions.")
+		patient = self._make_patient()
+		legacy = self._visit_with(patient, "Tretinoin")
+		frappe.db.set_value(
+			"Drug Prescription", {"parent": legacy.name}, "custom_hide_from_pharmacy", 1
+		)
+		page = api.get_previous_prescriptions(encounter=self._make_encounter(patient).name)
+		self.assertEqual(page["cards"][0]["lines"][0]["status"], "Dispensed")
+		self.assertEqual(page["summary"], {"lines": 1, "dispensed": 1, "partial": 0})
+
+	def test_the_current_and_cancelled_visits_are_skipped(self):
+		patient = self._make_patient()
+		cancelled = self._visit_with(patient, "Isotretinoin")
+		frappe.db.set_value("Patient Encounter", cancelled.name, "status", "Cancelled")
+		current = self._visit_with(patient, "Hydrocortisone")
+		self.assertEqual(api.get_previous_prescriptions(encounter=current.name)["cards"], [])
+
+	def test_the_rx_tab_no_longer_returns_previous(self):
+		current = self._make_encounter(self._make_patient())
+		self.assertNotIn("previous", api.get_derma_prescriptions(encounter=current.name))
+
+	def test_is_gated(self):
+		frappe.set_user(self._make_limited_user())
+		with self.assertRaises(frappe.PermissionError):
+			api.get_previous_prescriptions(encounter="does-not-matter")
+
+
 class TestOrderedPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 	"""A row turned into a Medication Request is kept verbatim, so resubmitting orders nothing twice."""
 
@@ -261,6 +315,19 @@ class TestOrderedPrescriptions(PrescriptionHelpers, IntegrationTestCase):
 		self.assertEqual(len(saved["drug_prescription"]), 1)
 		self.assertEqual(saved["drug_prescription"][0]["drug_name"], stored["drug_name"])
 		self.assertEqual(saved["drug_prescription"][0]["comment"], stored["comment"])
+
+	def test_an_ordered_row_keeps_its_name_across_saves(self):
+		"""The pharmacy links a dispense to the row name; a later save must not rename it."""
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)
+		ordered = api.submit_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+		api.set_derma_prescriptions(payload=json.dumps([*ordered, self._row()], default=str), encounter=encounter.name)
+		rows = frappe.get_all(
+			"Drug Prescription", {"parent": encounter.name}, ["name", "medication_request", "idx"], order_by="idx"
+		)
+		self.assertEqual(rows[0].name, ordered[0]["name"])
+		self.assertEqual([row.idx for row in rows], [1, 2])
+		self.assertIsNone(rows[1].medication_request)
 
 	def test_an_unknown_request_is_refused(self):
 		encounter = self._ordered_encounter()
@@ -604,3 +671,157 @@ class TestCompletionMessages(DermaTestHelpers, IntegrationTestCase):
 
 		self.assertIsNone(result["invoice"])
 		self.assertIn("No item price found", result["invoice_error"] or "")
+
+
+class TestPrescriptionDispense(PrescriptionHelpers, IntegrationTestCase):
+	"""Each row reports what the pharmacy has handed over, net of returns."""
+
+	def _saved_row(self):
+		encounter = self._make_encounter(self._make_patient())
+		row = api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)[
+			"drug_prescription"
+		][0]
+		return encounter, row
+
+	def test_an_undispensed_row_reads_zero(self):
+		_, row = self._saved_row()
+		self.assertEqual(row["dispensed_qty"], 0)
+		self.assertGreater(row["prescribed_qty"], 0)
+
+	def test_each_row_reads_its_dispensed_quantity(self):
+		encounter, row = self._saved_row()
+		with patch("do_derma.prescriptions.dispense.dispensed_quantities", return_value={row["name"]: 2.0}):
+			reloaded = api.get_derma_prescriptions(encounter=encounter.name)["drug_prescription"][0]
+		self.assertEqual(reloaded["dispensed_qty"], 2.0)
+
+	def test_a_migrated_line_reads_as_dispensed(self):
+		"""The old pharmacy handled every line the migration hid, so it counts as handed over."""
+		from do_derma.prescriptions import dispense
+
+		row = frappe._dict(name="legacy", custom_hide_from_pharmacy=1, dosage=None, period=None)
+		quantities = dispense.get_quantities([row])["legacy"]
+		self.assertEqual(quantities["dispensed_qty"], quantities["prescribed_qty"])
+		self.assertGreater(quantities["dispensed_qty"], 0)
+
+	def test_line_status(self):
+		from do_derma.prescriptions import dispense
+
+		self.assertEqual(dispense.get_line_status(2, 2), dispense.DISPENSED)
+		self.assertEqual(dispense.get_line_status(2, 3), dispense.DISPENSED)
+		self.assertEqual(dispense.get_line_status(2, 1), dispense.PARTIAL)
+		self.assertEqual(dispense.get_line_status(2, 0), dispense.NOT_DISPENSED)
+
+	def test_summary_counts_lines_by_status(self):
+		from do_derma.prescriptions import dispense
+
+		statuses = [dispense.DISPENSED, dispense.DISPENSED, dispense.PARTIAL, dispense.NOT_DISPENSED]
+		self.assertEqual(dispense.get_summary(statuses), {"lines": 4, "dispensed": 2, "partial": 1})
+
+
+class TestDispenseReadback(PrescriptionHelpers, IntegrationTestCase):
+	"""A row dispensed by do_health's pharmacy keeps its name and reports what was handed over."""
+
+	def setUp(self):
+		super().setUp()
+		company = _company()
+		self.warehouse = _warehouse(company)
+		self.item = _ensure_item(TEST_ITEM)
+		_ensure_price(self.item, 2.500)
+		_receive_stock(self.item, self.warehouse, 5, company)
+		self.medication = _ensure_medication(self.item)
+
+	def test_a_dispensed_row_survives_a_save_and_reads_its_quantity(self):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row(medication=self.medication)]), encounter=encounter.name)
+		ordered = api.submit_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+		pharmacy_api.submit_dispense(
+			{
+				"patient": encounter.patient,
+				"warehouse": self.warehouse,
+				"patient_encounter": encounter.name,
+				"lines": [
+					{"item_code": self.item, "qty": 1, "uom": "Nos", "verification": "Manual", "prescription_row": ordered[0]["name"]}
+				],
+			}
+		)
+		api.set_derma_prescriptions(payload=json.dumps([*ordered, self._row()], default=str), encounter=encounter.name)
+		rows = api.get_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+		self.assertEqual(rows[0]["name"], ordered[0]["name"])
+		self.assertEqual(rows[0]["dispensed_qty"], 1)
+
+
+class TestCancelPrescriptions(PrescriptionHelpers, IntegrationTestCase):
+	"""Cancelling an order unlocks the row; anything dispensed blocks the whole call."""
+
+	def _ordered(self, count=2):
+		encounter = self._make_encounter(self._make_patient())
+		api.set_derma_prescriptions(payload=json.dumps([self._row() for _ in range(count)]), encounter=encounter.name)
+		return encounter, api.submit_derma_prescriptions(encounter=encounter.name)["drug_prescription"]
+
+	def _request_status(self, row):
+		return frappe.db.get_value("Medication Request", row["medication_request"], "docstatus")
+
+	def test_cancel_one_unlocks_only_that_row(self):
+		encounter, rows = self._ordered()
+		result = api.cancel_derma_prescriptions(rows=json.dumps([rows[0]["name"]]), encounter=encounter.name)
+		requests = {row["name"]: row.get("medication_request") for row in result["drug_prescription"]}
+		self.assertIsNone(requests[rows[0]["name"]])
+		self.assertEqual(requests[rows[1]["name"]], rows[1]["medication_request"])
+		self.assertEqual(self._request_status(rows[0]), 2)
+		self.assertEqual(self._request_status(rows[1]), 1)
+
+	def test_cancel_all(self):
+		encounter, rows = self._ordered()
+		result = api.cancel_derma_prescriptions(encounter=encounter.name)
+		self.assertFalse(any(row.get("medication_request") for row in result["drug_prescription"]))
+		self.assertEqual([self._request_status(row) for row in rows], [2, 2])
+
+	def test_a_cancelled_row_can_be_ordered_again(self):
+		encounter, _ = self._ordered(count=1)
+		api.cancel_derma_prescriptions(encounter=encounter.name)
+		api.submit_derma_prescriptions(encounter=encounter.name)
+		statuses = frappe.get_all("Medication Request", {"order_group": encounter.name}, pluck="docstatus")
+		self.assertEqual(sorted(statuses), [1, 2])
+
+	def test_a_dispensed_row_blocks_the_whole_call(self):
+		encounter, rows = self._ordered()
+		with patch("do_derma.prescriptions.dispense.dispensed_quantities", return_value={rows[1]["name"]: 1.0}):
+			with self.assertRaisesRegex(frappe.ValidationError, "has been dispensed"):
+				api.cancel_derma_prescriptions(encounter=encounter.name)
+		self.assertEqual([self._request_status(row) for row in rows], [1, 1])
+
+	def test_a_foreign_row_is_refused(self):
+		encounter, _ = self._ordered(count=1)
+		with self.assertRaisesRegex(frappe.ValidationError, "does not belong"):
+			api.cancel_derma_prescriptions(rows=json.dumps(["not-a-row"]), encounter=encounter.name)
+
+	def test_an_unordered_row_is_refused(self):
+		encounter = self._make_encounter(self._make_patient())
+		row = api.set_derma_prescriptions(payload=json.dumps([self._row()]), encounter=encounter.name)[
+			"drug_prescription"
+		][0]
+		with self.assertRaisesRegex(frappe.ValidationError, "is not ordered"):
+			api.cancel_derma_prescriptions(rows=json.dumps([row["name"]]), encounter=encounter.name)
+
+	def test_nothing_ordered_is_refused(self):
+		encounter = self._make_encounter(self._make_patient())
+		with self.assertRaisesRegex(frappe.ValidationError, "Nothing to cancel"):
+			api.cancel_derma_prescriptions(encounter=encounter.name)
+
+	def test_a_completed_visit_cannot_cancel(self):
+		encounter, _ = self._ordered(count=1)
+		frappe.get_doc("Patient Encounter", encounter.name).submit()
+		with self.assertRaises(frappe.ValidationError):
+			api.cancel_derma_prescriptions(encounter=encounter.name)
+
+	def test_cancel_is_gated(self):
+		frappe.set_user(self._make_limited_user())
+		with self.assertRaises(frappe.PermissionError):
+			api.cancel_derma_prescriptions(encounter="does-not-matter")
+
+	def test_malformed_rows_cancel_nothing(self):
+		encounter, rows = self._ordered()
+		for bad in ("[bad", '"text"', "{}"):
+			with self.assertRaisesRegex(frappe.ValidationError, "Rows must be a list"):
+				api.cancel_derma_prescriptions(rows=bad, encounter=encounter.name)
+		self.assertEqual([self._request_status(row) for row in rows], [1, 1])

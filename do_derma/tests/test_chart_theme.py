@@ -862,6 +862,8 @@ PRESCRIPTION_PANEL = PRESCRIPTION_DIR / "PrescriptionPanel.vue"
 PRESCRIPTION_ROW = PRESCRIPTION_DIR / "PrescriptionRow.vue"
 MEDICATION_SEARCH = PRESCRIPTION_DIR / "MedicationSearch.vue"
 PRESCRIPTION_STOCK = PRESCRIPTION_DIR / "stock.js"
+PRESCRIPTION_DISPENSE = PRESCRIPTION_DIR / "dispense.js"
+PREVIOUS_PRESCRIPTIONS = PRESCRIPTION_DIR / "PreviousPrescriptions.vue"
 
 
 class TestPrescriptionRow(TestCase):
@@ -973,7 +975,7 @@ class TestMedicationSearch(TestCase):
 		self.assertIn(':encounter="encounter"', cell)
 		self.assertIn("@pick=\"emit('pick-medication', $event)\"", cell)
 		self.assertNotIn('medication: "Medication"', script)
-		self.assertIn("if (!LINK_OPTIONS[field]) return", script)
+		self.assertIn("if (!LINK_OPTIONS[field]) {", script)
 
 	def test_search_asks_the_ranked_endpoint_and_drops_stale_answers(self):
 		_, script, _ = get_component_parts(MEDICATION_SEARCH)
@@ -1054,7 +1056,7 @@ class TestPrescriptionPanelRestyle(TestCase):
 		template, _, _ = get_component_parts(PRESCRIPTION_PANEL)
 		header = get_element(template, '<Teleport defer to="#chart-section-actions">')
 		self.assertRegex(header, r'class="primary small"\s+data-test="prescription-save"')
-		self.assertEqual(header.count("<button"), 3)
+		self.assertEqual(header.count("<button"), 4)
 		self.assertNotIn("Add medication", template)
 		self.assertEqual(template.count("primary"), 1)
 
@@ -1107,7 +1109,7 @@ class TestPrescriptionPanelRestyle(TestCase):
 		self.assertIn("@mousedown.prevent", save)
 		self.assertLess(script.index(".commitPicker()"), script.index('emit("save"'))
 		_, row_script, _ = get_component_parts(PRESCRIPTION_ROW)
-		self.assertIn("defineExpose({ commitPicker })", row_script)
+		self.assertIn("defineExpose({ commitPicker, focusNotes, hasFocusElsewhere })", row_script)
 
 	def test_the_count_skips_rows_the_save_would_drop(self):
 		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
@@ -1157,25 +1159,11 @@ class TestPrescriptionPanelRestyle(TestCase):
 		validation = script.split("const validationError", 1)[1].split("})", 1)[0]
 		self.assertNotIn("duplicate", validation)
 
-	def test_last_visit_medications_repeat_into_the_blank_row(self):
-		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
-		strip = get_element(template, '<div v-if="canEdit && !loading && previousRows.length"')
-		self.assertIn('data-test="prescription-repeat"', strip)
-		self.assertIn('class="chart-pill"', strip)
-		self.assertIn(':disabled="isPrescribed(row.medication)"', strip)
-		self.assertIn('data-test="prescription-repeat-all"', strip)
-		self.assertIn('__("Add all")', strip)
-		self.assertIn("previous: { type: Object, default: null }", script)
+	def test_repeating_a_line_fills_the_blank_row(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
 		repeat = script.split("function repeatRow(row)", 1)[1].split("\n}", 1)[0]
 		self.assertIn("ensureTrailingDraft()", repeat)
 		self.assertIn("VALUE_FIELDS.map", repeat)
-
-	def test_the_chart_keeps_the_previous_visit_across_saves(self):
-		chart = (CHART_DIR / "DermaChart.vue").read_text()
-		self.assertIn(':previous="prescriptionPanel.previous"', chart)
-		self.assertIn("prescriptionPanel.previous = response.message?.previous || null", chart)
-		save = chart.split("async function savePrescriptionPanel", 1)[1].split("\n}", 1)[0]
-		self.assertNotIn("previous", save)
 
 	def test_the_diagnosis_field_copies_from_the_assessment(self):
 		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
@@ -1492,3 +1480,221 @@ class TestUnsavedChangesGuard(TestCase):
 	def test_reload_warns_while_anything_is_unsaved(self):
 		self.assertIn('window.addEventListener("beforeunload", warnBeforeUnload)', self.chart)
 		self.assertIn('window.removeEventListener("beforeunload", warnBeforeUnload)', self.chart)
+
+
+class TestPrescriptionOrders(TestCase):
+	"""Ordered rows show the pharmacy's progress and can be cancelled while nothing is dispensed."""
+
+	def test_ordered_rows_show_their_dispense_status(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('import { getDispenseStatus, isDispensed } from "./dispense.js"', script)
+		cell = get_element(template, '<td class="ordered-cell">')
+		self.assertIn('data-test="prescription-dispense-status"', cell)
+		helpers = PRESCRIPTION_DISPENSE.read_text()
+		for label in ('__("Not dispensed")', '__("Partial")', '__("Dispensed")'):
+			self.assertIn(label, helpers)
+
+	def test_a_dispensed_row_offers_no_cancel(self):
+		template, _, _ = get_component_parts(PRESCRIPTION_PANEL)
+		button = get_element(template, '<button\n              v-if="canEdit && !isDispensed(row)"')
+		self.assertIn('data-test="prescription-cancel"', button)
+
+	def test_cancel_all_skips_dispensed_rows(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('data-test="prescription-cancel-all"', template)
+		self.assertIn("orderedRows.value.filter((row) => !isDispensed(row))", script)
+
+	def test_cancel_waits_for_a_save(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		for hook in ('data-test="prescription-cancel"', 'data-test="prescription-cancel-all"'):
+			start = template.index(hook)
+			button = template[template.rindex("<button", 0, start) : template.index(">", start)]
+			self.assertIn("isDirty", button)
+		cancel = script.split("function cancelOrders(rows)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("frappe.confirm(", cancel)
+		self.assertIn('emit("cancel", rows.map((row) => row.name))', cancel)
+
+	def test_cancel_warns_the_row_reorders_on_completion(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		cancel = script.split("function cancelOrders(rows)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("rows[0].medication || rows[0].drug_name || rows[0].drug_code", cancel)
+		self.assertIn("The row becomes editable again.", cancel)
+		self.assertIn("The rows become editable again.", cancel)
+		self.assertIn("Delete the row, or it will be ordered again when the visit is completed.", cancel)
+
+	def test_the_chart_cancels_through_the_endpoint(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		self.assertIn('@cancel="cancelPrescriptionOrders"', chart)
+		self.assertIn('method: "do_derma.api.cancel_derma_prescriptions"', chart)
+
+	def test_the_cancelled_alert_counts_the_orders(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		script = chart.split("async function cancelPrescriptionOrders(rows)", 1)[1].split("\n}\n", 1)[0]
+		self.assertIn('__("Order cancelled")', script)
+		self.assertIn('__("{0} orders cancelled")', script)
+
+
+class TestPreviousPrescriptions(TestCase):
+	"""Earlier prescriptions as a scrolling strip of cards, five at a time, each repeatable."""
+
+	def test_cards_load_five_at_a_time(self):
+		template, script, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		self.assertIn("const PAGE_SIZE = 5", script)
+		self.assertIn('method: "do_derma.api.get_previous_prescriptions"', script)
+		self.assertIn('data-test="prescription-previous-more"', template)
+		self.assertIn('v-if="hasMore"', template)
+
+	def test_a_stale_page_is_dropped(self):
+		_, script, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		self.assertIn("if (token !== requestId) return", script)
+
+	def test_each_card_repeats_its_lines(self):
+		template, _, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		button = get_element(template, '<button\n          type="button"\n          class="previous-repeat"')
+		self.assertNotIn('v-if="canRepeat"', button)
+		self.assertIn('!canRepeat ||', button)
+		self.assertIn('data-test="prescription-previous-repeat"', button)
+		self.assertIn("emit('repeat', card.lines)", button)
+		self.assertIn("prescribed.includes(line.medication)", button)
+		self.assertIn(":aria-label=\"__('Repeat these medications')\"", button)
+
+	def test_each_line_shows_whether_the_pharmacy_dispensed_it(self):
+		template, script, style = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		line = get_element(template, '<li\n          v-for="(line, index) in card.lines"')
+		self.assertIn(':data-status="line.status"', line)
+		self.assertIn(':title="getLineTitle(line)"', line)
+		self.assertIn("STATUS_ICONS[line.status]", line)
+		self.assertIn('<span class="sr-only">{{ __(line.status) }}</span>', line)
+		for status in ("Dispensed", "Partially dispensed", "Not dispensed"):
+			self.assertIn(f'"{status}"', script.split("const STATUS_ICONS", 1)[1].split("}", 1)[0])
+		self.assertIn("var(--chart-ok-text)", style)
+		self.assertIn("var(--chart-caution-text)", style)
+		self.assertNotIn("card.status", template)
+
+	def test_the_summary_card_leads_the_strip(self):
+		template, script, _ = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		summary = get_element(template, '<article\n      v-if="summary?.lines"')
+		self.assertIn('data-test="prescription-previous-summary"', summary)
+		self.assertIn('role="progressbar"', summary)
+		self.assertIn("dispensedPercent", summary)
+		self.assertLess(template.index("prescription-previous-summary"), template.index("prescription-previous-card"))
+		self.assertIn("Math.round((summary.value.dispensed / summary.value.lines) * 100)", script)
+		self.assertIn("if (!start) summary.value = page.summary || null", script)
+
+	def test_cards_are_compact(self):
+		_, _, style = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		card = get_rule_body(style, ".previous-card {")
+		self.assertIn("flex: 0 0 180px", card)
+		# A flex item's automatic minimum is its widest unbroken line, which would stretch the card.
+		self.assertIn("min-width: 0", card)
+		self.assertIn("text-overflow: ellipsis", get_rule_body(style, ".previous-medication {"))
+
+	def test_the_strip_scrolls_sideways(self):
+		_, _, style = get_component_parts(PREVIOUS_PRESCRIPTIONS)
+		self.assertIn("overflow-x: auto", get_rule_body(style, ".previous-prescriptions {"))
+
+	def test_the_panel_hosts_the_strip_instead_of_the_old_chips(self):
+		template, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn("<PreviousPrescriptions", template)
+		self.assertIn('@repeat="(lines) => lines.forEach(repeatRow)"', template)
+		self.assertNotIn("repeat-strip", template)
+		self.assertNotIn("previous:", script)
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		self.assertNotIn("prescriptionPanel.previous", chart)
+
+
+class TestPrescriptionAutoAdvance(TestCase):
+	"""After each pick the next empty field opens; Enter in Notes starts the next medication."""
+
+	def test_the_next_empty_field_opens(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('const ADVANCE_FIELDS = ["dosage", "period"]', script)
+		advance = script.split("function openNextField(draft)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("ADVANCE_FIELDS.find((field) => !draft.values[field])", advance)
+		self.assertIn("focusNotes()", advance)
+
+	def test_a_pick_advances_instead_of_closing(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_ROW)
+		change = script.split("change: () => {", 1)[1].split("},", 1)[0]
+		self.assertIn('emit("advance")', change)
+		choose = script.split("function chooseItem(itemCode)", 1)[1].split("\n}", 1)[0]
+		self.assertIn('emit("advance")', choose)
+		self.assertIn("defineExpose({ commitPicker, focusNotes, hasFocusElsewhere })", script)
+
+	def test_advance_after_defaults_respects_an_open_picker(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		apply = script.split("async function applyMedication", 1)[1].split("} catch", 1)[0]
+		self.assertIn("else if (!openPicker.value && !rowComponents[draft.key]?.hasFocusElsewhere()) openNextField(draft)", apply)
+
+	def test_a_stale_control_cannot_overwrite_the_new_pick(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_ROW)
+		mount = script.split("function mountPicker(field)", 1)[1].split("\n}", 1)[0]
+		self.assertIn("const linkControl = frappe.ui.form.make_control", mount)
+		self.assertIn("if (linkControl !== control) return", mount)
+		self.assertIn("linkControl.get_value()", mount)
+		self.assertIn("control = linkControl", mount)
+
+	def test_closing_the_picker_retires_its_control(self):
+		_, script, _ = get_component_parts(PRESCRIPTION_ROW)
+		watcher = script.split("() => props.openField,", 1)[1].split("await nextTick()", 1)[0]
+		self.assertIn("if (!LINK_OPTIONS[field]) {\n      control = null", watcher)
+
+	def test_focus_moved_on_purpose_is_not_stolen(self):
+		_, row_script, _ = get_component_parts(PRESCRIPTION_ROW)
+		change = row_script.split("change: () => {", 1)[1].split("},", 1)[0]
+		self.assertIn("pickerHost?.contains(document.activeElement)", change)
+		focus = row_script.split("function hasFocusElsewhere()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("document.body", focus)
+		self.assertIn("rowElement.value.contains", focus)
+		self.assertIn("if (!rowElement.value) return false", focus)
+		self.assertIn("hasFocusElsewhere", row_script.split("defineExpose", 1)[1].split("\n", 1)[0])
+		_, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		start = script.split("function startNextRow()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("if (!canEdit.value) return", start)
+
+	def test_enter_in_notes_starts_the_next_row(self):
+		template, _, _ = get_component_parts(PRESCRIPTION_ROW)
+		notes = template.split("<input", 1)[1].split("/>", 1)[0]
+		self.assertIn("@keydown.enter.prevent=\"emit('notes-enter')\"", notes)
+		panel, script, _ = get_component_parts(PRESCRIPTION_PANEL)
+		self.assertIn('@notes-enter="startNextRow"', panel)
+		self.assertIn('@advance="openNextField(draft)"', panel)
+		start = script.split("function startNextRow()", 1)[1].split("\n}", 1)[0]
+		self.assertIn('field: "medication"', start)
+
+
+class TestAssessmentClear(TestCase):
+	"""Clear note and Clear AI confirm, then go through one chart call."""
+
+	def test_clear_note_sits_in_the_header_while_editing(self):
+		template, script, _ = get_component_parts(ASSESSMENT_DIR / "AssessmentPanel.vue")
+		button = get_element(template, '<button\n          v-if="editMode && isFilled"')
+		self.assertIn('data-test="assessment-clear"', button)
+		self.assertIn('"clear"', script.split("defineEmits(", 1)[1].split(")", 1)[0])
+		clear = script.split("function clearNote()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("frappe.confirm(", clear)
+
+	def test_clear_ai_sits_in_the_scribe_result(self):
+		template, script, _ = get_component_parts(ASSESSMENT_DIR / "VoiceScribe.vue")
+		head = get_element(template, '<div class="voice-result-head">')
+		self.assertIn('data-test="voice-clear"', head)
+		clear = script.split("function clearAi()", 1)[1].split("\n}", 1)[0]
+		self.assertIn("frappe.confirm(", clear)
+		self.assertIn("result.value = null", clear)
+
+	def test_the_chart_clears_through_one_endpoint(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		self.assertIn("@clear=\"clearAssessment('note')\"", chart)
+		self.assertIn("@clear=\"clearAssessment('ai')\"", chart)
+		self.assertIn('method: "do_derma.api.clear_derma_assessment"', chart)
+
+	def test_clear_ai_leaves_the_note_and_edit_state_alone(self):
+		chart = (CHART_DIR / "DermaChart.vue").read_text()
+		script = chart.split("async function clearAssessment(scope)", 1)[1].split("\n}\n", 1)[0]
+		self.assertIn('if (scope === "ai") applyAiResponse(', script)
+		self.assertIn("else applyAssessmentResponse(", script)
+		self.assertIn('if (scope === "note") assessmentPanel.editing = true', script)
+		self.assertIn('if (scope === "note" && loadedTabs.prescriptions) loadPrescriptionPanel(true)', script)
+		ai = chart.split("function applyAiResponse(message)", 1)[1].split("\n}\n", 1)[0]
+		for forbidden in ("editing", "values", "Values", "isFilled"):
+			self.assertNotIn(forbidden, ai)

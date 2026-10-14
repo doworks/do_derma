@@ -390,6 +390,16 @@ def apply_assessment(encounter_doc, values: dict[str, Any], mode: str | None = N
 		encounter_doc.set(MODE_FIELD, target_mode)
 
 
+def clear_notes(encounter_doc) -> None:
+	"""Empty every format's fields; the documented format is kept."""
+	for mode in ASSESSMENT_MODES:
+		if not mode_is_supported(mode):
+			continue
+		for row in get_layout(mode):
+			if row.get("is_value_field"):
+				encounter_doc.set(row["fieldname"], [] if row.get("fieldtype") in TABLE_FIELD_TYPES else None)
+
+
 def stamp_mode(encounter_doc, mode: str) -> None:
 	"""Change the documented format. Writes no content and deletes nothing."""
 	target_mode = normalize_mode(mode)

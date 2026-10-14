@@ -28,7 +28,14 @@ from frappe import _
 from frappe.utils import cint, cstr, date_diff, getdate, nowdate
 
 from do_derma.assessment import HP_FIELDS, SOAP_FIELDS
-from do_derma.schema import AI_DIAGNOSIS_FIELD, ICD10_FIELD, NOTE_AR_FIELD, PATIENT_ADVICE_AR_FIELD, PATIENT_ADVICE_FIELD
+from do_derma.schema import (
+	AI_DIAGNOSIS_FIELD,
+	ICD10_FIELD,
+	NOTE_AR_FIELD,
+	PATIENT_ADVICE_AR_FIELD,
+	PATIENT_ADVICE_FIELD,
+	PRINT_PATIENT_ADVICE_FIELD,
+)
 from do_derma.schema import VOICE_TRANSCRIPT_FIELD as TRANSCRIPT_FIELD
 from do_derma.settings import get_settings_doc
 
@@ -43,6 +50,14 @@ MAX_TOKENS = 5000
 PASSWORD_FIELDS = {"elevenlabs_api_key", "llm_api_key"}
 
 SUBJECTIVE, OBJECTIVE, ASSESSMENT, PLAN = SOAP_FIELDS
+AI_OUTPUT_FIELDS = (
+	AI_DIAGNOSIS_FIELD,
+	ICD10_FIELD,
+	NOTE_AR_FIELD,
+	PATIENT_ADVICE_FIELD,
+	PATIENT_ADVICE_AR_FIELD,
+	TRANSCRIPT_FIELD,
+)
 HP_KEYS = ("chief_complaint", "history_of_presenting_complaint", "past_medical_history", "examination_findings", "hp_assessment", "management_plan")
 
 NOTE_SYSTEM_PROMPT = """You are SOULVD Health, an expert dermatology medical scribe assistant working for {clinic}, a dermatology clinic in {country}.
@@ -598,3 +613,13 @@ def safe_parse_json(raw: str | None) -> dict[str, Any] | None:
 		except json.JSONDecodeError:
 			continue
 	return None
+
+
+def clear_ai_output(encounter_doc) -> None:
+	"""Drop what the scribe produced beside the note; the recording File stays."""
+	meta = frappe.get_meta("Patient Encounter")
+	for fieldname in AI_OUTPUT_FIELDS:
+		if meta.has_field(fieldname):
+			encounter_doc.set(fieldname, None)
+	if meta.has_field(PRINT_PATIENT_ADVICE_FIELD):
+		encounter_doc.set(PRINT_PATIENT_ADVICE_FIELD, 0)

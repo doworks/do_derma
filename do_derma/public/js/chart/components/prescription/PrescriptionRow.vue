@@ -101,6 +101,7 @@
         :placeholder="readOnly ? '' : __('Notes')"
         :aria-label="__('Notes')"
         @input="emit('update', 'comment', $event.target.value)"
+        @keydown.enter.prevent="emit('notes-enter')"
       />
     </td>
     <td class="row-actions">
@@ -146,7 +147,7 @@ const props = defineProps({
   missing: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(["update", "open-picker", "close-picker", "choose-item", "pick-medication", "remove"])
+const emit = defineEmits(["update", "open-picker", "close-picker", "choose-item", "pick-medication", "remove", "advance", "notes-enter"])
 
 // Older rows carry only a drug name or item code.
 const medicationLabel = computed(() => {
@@ -173,7 +174,10 @@ let control = null
 watch(
   () => props.openField,
   async (field) => {
-    if (!LINK_OPTIONS[field]) return
+    if (!LINK_OPTIONS[field]) {
+      control = null
+      return
+    }
     await nextTick()
     mountPicker(field)
   },
@@ -187,7 +191,7 @@ function setPickerHost(element) {
 function mountPicker(field) {
   if (!pickerHost || !window.frappe?.ui?.form?.make_control) return
   pickerHost.innerHTML = ""
-  control = frappe.ui.form.make_control({
+  const linkControl = frappe.ui.form.make_control({
     parent: pickerHost,
     df: {
       fieldtype: "Link",
@@ -196,12 +200,16 @@ function mountPicker(field) {
       placeholder: __(LINK_OPTIONS[field]),
       only_select: 1,
       change: () => {
-        emit("update", field, control.get_value() || "")
-        closePicker(field)
+        if (linkControl !== control) return
+        const value = linkControl.get_value() || ""
+        emit("update", field, value)
+        if (value && pickerHost?.contains(document.activeElement)) emit("advance")
+        else closePicker(field)
       },
     },
     render_input: true,
   })
+  control = linkControl
   const getSearchArgs = control.get_search_args.bind(control)
   control.get_search_args = (text) => {
     const args = getSearchArgs(text)
@@ -220,11 +228,22 @@ async function commitPicker() {
   await control.parse_validate_and_set_in_model(control.get_input_value())
 }
 
-defineExpose({ commitPicker })
+function focusNotes() {
+  rowElement.value?.querySelector('[data-test="prescription-notes"]')?.focus()
+}
+
+// True when the doctor moved focus to another control on purpose.
+function hasFocusElsewhere() {
+  if (!rowElement.value) return false
+  const active = document.activeElement
+  return Boolean(active) && active !== document.body && !rowElement.value.contains(active)
+}
+
+defineExpose({ commitPicker, focusNotes, hasFocusElsewhere })
 
 function chooseItem(itemCode) {
   emit("update", "drug_code", itemCode)
-  closePicker("drug_code")
+  emit("advance")
 }
 
 function chooseOtherMedication() {

@@ -20,6 +20,17 @@
       </button>
       <template v-if="canEdit">
         <button
+          v-if="cancellableRows.length"
+          type="button"
+          class="ghost small"
+          data-test="prescription-cancel-all"
+          :disabled="loading || saving || isDirty"
+          :title="isDirty ? __('Save first, then cancel') : ''"
+          @click="cancelOrders(cancellableRows)"
+        >
+          {{ __("Cancel all orders") }}
+        </button>
+        <button
           v-if="hasSavedRows"
           type="button"
           class="ghost small"
@@ -44,6 +55,13 @@
     </Teleport>
 
     <p v-if="errorText" class="error-text" role="alert" data-test="prescription-error">{{ errorText }}</p>
+    <PreviousPrescriptions
+      v-if="hasEncounter && !loading"
+      :encounter="encounterName"
+      :can-repeat="canEdit"
+      :prescribed="prescribedMedications"
+      @repeat="(lines) => lines.forEach(repeatRow)"
+    />
 
     <div v-if="hasEncounter && !loading" class="diagnosis-field">
       <div class="diagnosis-head">
@@ -105,6 +123,24 @@
           <td>{{ row.comment || "—" }}</td>
           <td class="ordered-cell">
             <span class="chart-pill" data-tone="ok" :title="row.medication_request">{{ __("Ordered") }}</span>
+            <span
+              v-if="getDispenseStatus(row)"
+              class="chart-pill"
+              :data-tone="getDispenseStatus(row).tone"
+              data-test="prescription-dispense-status"
+            >{{ getDispenseStatus(row).label }}</span>
+            <button
+              v-if="canEdit && !isDispensed(row)"
+              type="button"
+              class="ghost small"
+              data-test="prescription-cancel"
+              :disabled="loading || saving || isDirty"
+              :title="isDirty ? __('Save first, then cancel') : __('Cancel order')"
+              :aria-label="__('Cancel order')"
+              @click="cancelOrders([row])"
+            >
+              <i class="fa-solid fa-ban" aria-hidden="true"></i>
+            </button>
           </td>
         </tr>
         <PrescriptionRow
@@ -120,6 +156,8 @@
           @update="(field, value) => updateField(draft, field, value)"
           @open-picker="(field) => (openPicker = { key: draft.key, field })"
           @close-picker="openPicker = null"
+          @advance="openNextField(draft)"
+          @notes-enter="startNextRow"
           :encounter="encounterName"
           @pick-medication="(pick) => pickMedication(draft, pick)"
           @choose-item="openItemChooser(draft)"
@@ -127,38 +165,14 @@
         />
       </tbody>
     </table>
-
-    <div v-if="canEdit && !loading && previousRows.length" class="repeat-strip" data-test="prescription-repeat">
-      <span class="chart-label">{{ __("From {0} visit").replace("{0}", previousDate) }}</span>
-      <button
-        v-for="(row, index) in previousRows"
-        :key="index"
-        type="button"
-        class="chart-pill"
-        :data-tone="isPrescribed(row.medication) ? 'ok' : 'neutral'"
-        data-test="prescription-repeat-chip"
-        :disabled="isPrescribed(row.medication)"
-        @click="repeatRow(row)"
-      >
-        <i v-if="isPrescribed(row.medication)" class="fa-solid fa-check" aria-hidden="true"></i>
-        {{ row.medication }}
-      </button>
-      <button
-        type="button"
-        class="ghost small"
-        data-test="prescription-repeat-all"
-        :disabled="previousRows.every((row) => isPrescribed(row.medication))"
-        @click="previousRows.forEach(repeatRow)"
-      >
-        {{ __("Add all") }}
-      </button>
-    </div>
   </section>
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue"
+import { computed, nextTick, ref, watch } from "vue"
 import PrescriptionRow from "./PrescriptionRow.vue"
+import PreviousPrescriptions from "./PreviousPrescriptions.vue"
+import { getDispenseStatus, isDispensed } from "./dispense.js"
 
 const __ = window.__ || ((text) => text)
 
@@ -173,13 +187,12 @@ const props = defineProps({
   hasEncounter: { type: Boolean, default: false },
   encounterName: { type: String, default: "" },
   rows: { type: Array, default: () => [] },
-  previous: { type: Object, default: null },
   savedDiagnosis: { type: String, default: "" },
   assessmentDiagnosis: { type: String, default: "" },
   readOnly: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(["save", "dirty", "print", "submit"])
+const emit = defineEmits(["save", "dirty", "print", "submit", "cancel"])
 
 let nextKey = 0
 const rowComponents = {}
@@ -192,6 +205,7 @@ const showMissing = ref(false)
 
 const canEdit = computed(() => props.hasSessionContext && props.hasEncounter && !props.readOnly)
 const orderedRows = computed(() => (props.rows || []).filter((row) => row.medication_request))
+const cancellableRows = computed(() => orderedRows.value.filter((row) => !isDispensed(row)))
 const rowCount = computed(() => orderedRows.value.length + getPayload().length)
 const hasSavedRows = computed(() => (props.rows || []).some((row) => row.medication))
 const unorderedCount = computed(
@@ -204,8 +218,9 @@ const isDiagnosisDirty = computed(() => {
 })
 const isDirty = computed(() => JSON.stringify(getPayload()) !== snapshot.value || isDiagnosisDirty.value)
 
-const previousRows = computed(() => props.previous?.drug_prescription || [])
-const previousDate = computed(() => frappe.datetime.str_to_user(props.previous?.encounter_date))
+const prescribedMedications = computed(() =>
+  [...orderedRows.value.map((row) => row.medication), ...drafts.value.map((draft) => draft.values.medication)].filter(Boolean)
+)
 
 const statusPill = computed(() => {
   if (!props.hasEncounter) return null
@@ -290,9 +305,7 @@ function isTrailing(draft) {
 }
 
 function isPrescribed(medication) {
-  return [...orderedRows.value, ...drafts.value.map((draft) => draft.values)].some(
-    (row) => row.medication === medication
-  )
+  return prescribedMedications.value.includes(medication)
 }
 
 // Fills the blank trailing row with a last-visit line, then adds the next blank row.
@@ -316,9 +329,21 @@ function printPrescription() {
 function submitPrescription() {
   if (isDirty.value || !unorderedCount.value) return
   frappe.confirm(
-    __("Order {0} medications? Ordered rows can't be edited here.").replace("{0}", unorderedCount.value),
+    __("Order {0} medications? Ordered rows are locked until you cancel the order.").replace("{0}", unorderedCount.value),
     () => emit("submit")
   )
+}
+
+function cancelOrders(rows) {
+  const message =
+    rows.length === 1
+      ? __("Cancel the order for {0}? The row becomes editable again.").replace(
+          "{0}",
+          rows[0].medication || rows[0].drug_name || rows[0].drug_code
+        )
+      : __("Cancel {0} orders? The rows become editable again.").replace("{0}", rows.length)
+  const warning = __("Delete the row, or it will be ordered again when the visit is completed.")
+  frappe.confirm(`${message} ${warning}`, () => emit("cancel", rows.map((row) => row.name)))
 }
 
 function removeRow(draft) {
@@ -354,7 +379,24 @@ function pickMedication(draft, picked) {
   if (picked.drugCode) {
     Object.assign(draft, { warehouse: picked.warehouse, linkedItems: picked.items })
     draft.values.drug_code = picked.drugCode
+    openNextField(draft)
   }
+}
+
+const ADVANCE_FIELDS = ["dosage", "period"]
+
+// Opens the first empty picker after the medication, or moves to Notes once every pick is made.
+function openNextField(draft) {
+  if (!canEdit.value) return
+  const field = ADVANCE_FIELDS.find((field) => !draft.values[field])
+  openPicker.value = field ? { key: draft.key, field } : null
+  if (!field) nextTick(() => rowComponents[draft.key]?.focusNotes())
+}
+
+function startNextRow() {
+  if (!canEdit.value) return
+  ensureTrailingDraft()
+  openPicker.value = { key: drafts.value.at(-1).key, field: "medication" }
 }
 
 // A repeated line keeps its item only while the medication still links it, with today's stock.
@@ -402,6 +444,7 @@ async function applyMedication(draft, medication, picked = null) {
       dosage_form: defaults.dosage_form || "",
     }
     if (!drugCode && draft.linkedItems.length) openPicker.value = { key: draft.key, field: "drug_code" }
+    else if (!openPicker.value && !rowComponents[draft.key]?.hasFocusElsewhere()) openNextField(draft)
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn("Failed to apply medication defaults", error)
@@ -538,20 +581,12 @@ async function save() {
   font-size: 12px;
 }
 
-.repeat-strip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.repeat-strip .chart-pill:disabled {
-  cursor: default;
-}
-
 .ordered-cell {
-  text-align: right;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .sr-only {

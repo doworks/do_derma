@@ -101,8 +101,10 @@
                   :saved="savedVoiceSummary"
                   @fill="applyVoiceNote"
                   @refined="applyRefinedNote"
+                  @clear="clearAssessment('ai')"
                 />
                 <AssessmentPanel
+                  @clear="clearAssessment('note')"
                   :mode="shownAssessmentMode"
                   :documented-mode="assessmentPanel.mode"
                   :available-modes="assessmentPanel.availableModes"
@@ -302,7 +304,6 @@
             :has-encounter="Boolean(prescriptionPanel.encounter)"
             :encounter-name="prescriptionPanel.encounter"
             :rows="prescriptionPanel.rows"
-            :previous="prescriptionPanel.previous"
             :saved-diagnosis="prescriptionPanel.diagnosis"
             :assessment-diagnosis="prescriptionPanel.assessmentDiagnosis"
             :read-only="isEncounterLocked"
@@ -310,6 +311,7 @@
             ref="prescriptionPanelRef"
             @save="savePrescriptionPanel"
             @submit="submitPrescriptionPanel"
+            @cancel="cancelPrescriptionOrders"
             @dirty="(value) => (unsavedSections.prescriptions = value)"
             @print="printDermaPage('prescription', prescriptionPanel.encounter)"
           />
@@ -748,7 +750,6 @@ const prescriptionPanel = reactive({
   error: "",
   encounter: "",
   rows: [],
-  previous: null,
   diagnosis: "",
   assessmentDiagnosis: "",
 })
@@ -2050,6 +2051,15 @@ function applyAssessmentResponse(message) {
   assessmentPanel.editing = false
 }
 
+function applyAiResponse(message) {
+  assessmentPanel.aiDiagnosis = message.ai_diagnosis || ""
+  assessmentPanel.icd10 = message.icd10 || ""
+  assessmentPanel.noteAr = message.note_ar || ""
+  assessmentPanel.patientAdvice = message.patient_advice || ""
+  assessmentPanel.patientAdviceAr = message.patient_advice_ar || ""
+  assessmentPanel.printPatientAdvice = Boolean(message.print_patient_advice)
+}
+
 async function saveAssessment({ payload, mode }) {
   assessmentPanel.saving = true
   assessmentPanel.error = ""
@@ -2063,6 +2073,28 @@ async function saveAssessment({ payload, mode }) {
     if (loadedTabs.prescriptions) loadPrescriptionPanel(true)
   } catch (error) {
     assessmentPanel.error = serverErrorText(error, __("The assessment could not be saved."))
+    frappe.show_alert({ message: assessmentPanel.error, indicator: "red" })
+  } finally {
+    assessmentPanel.saving = false
+  }
+}
+
+async function clearAssessment(scope) {
+  assessmentPanel.saving = true
+  assessmentPanel.error = ""
+  try {
+    const response = await frappe.call({
+      method: "do_derma.api.clear_derma_assessment",
+      args: { ...contextArgs(), scope },
+    })
+    if (scope === "ai") applyAiResponse(response.message || {})
+    else applyAssessmentResponse(response.message || {})
+    if (scope === "note") assessmentPanel.editing = true
+    // Only the note seeds the Rx diagnosis.
+    if (scope === "note" && loadedTabs.prescriptions) loadPrescriptionPanel(true)
+    frappe.show_alert({ message: scope === "ai" ? __("AI output cleared") : __("Note cleared"), indicator: "green" })
+  } catch (error) {
+    assessmentPanel.error = serverErrorText(error, __("The assessment could not be cleared."))
     frappe.show_alert({ message: assessmentPanel.error, indicator: "red" })
   } finally {
     assessmentPanel.saving = false
@@ -2202,7 +2234,6 @@ async function loadPrescriptionPanel(force = false) {
   try {
     const response = await frappe.call({ method: "do_derma.api.get_derma_prescriptions", args: contextArgs() })
     applyPrescriptionResponse(response.message)
-    prescriptionPanel.previous = response.message?.previous || null
     loadedTabs.prescriptions = true
   } catch (error) {
     prescriptionPanel.error = serverErrorText(error, __("Unable to load prescriptions."))
@@ -2239,6 +2270,25 @@ async function submitPrescriptionPanel() {
     frappe.show_alert({ message: __("Prescription ordered"), indicator: "green" })
   } catch (error) {
     prescriptionPanel.error = serverErrorText(error, __("The prescription could not be ordered."))
+    frappe.show_alert({ message: prescriptionPanel.error, indicator: "red" })
+  } finally {
+    prescriptionPanel.saving = false
+  }
+}
+
+async function cancelPrescriptionOrders(rows) {
+  prescriptionPanel.saving = true
+  prescriptionPanel.error = ""
+  try {
+    const response = await frappe.call({
+      method: "do_derma.api.cancel_derma_prescriptions",
+      args: { ...contextArgs(), rows },
+    })
+    applyPrescriptionResponse(response.message)
+    const message = rows?.length > 1 ? __("{0} orders cancelled").replace("{0}", rows.length) : __("Order cancelled")
+    frappe.show_alert({ message, indicator: "green" })
+  } catch (error) {
+    prescriptionPanel.error = serverErrorText(error, __("The order could not be cancelled."))
     frappe.show_alert({ message: prescriptionPanel.error, indicator: "red" })
   } finally {
     prescriptionPanel.saving = false
