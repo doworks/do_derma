@@ -56,6 +56,10 @@ jinja = {
 # renders it; the provider only reads and returns plain data.
 do_health_patient_overview_sections = ["do_derma.overview.section.get_patient_overview_section"]
 
+# The Derma Chart quick action and the Derma Configuration nav entry, as standard items of
+# do_health's sidebar. do_health creates them on migrate; see do_derma/sidebar.py.
+do_health_sidebar_items = ["do_derma.sidebar.get_sidebar_items"]
+
 # Runs on every migrate, bypassing Patch Log, so a site whose patches are recorded
 # as applied but whose fields are missing converges anyway. Idempotent.
 after_migrate = "do_derma.install.after_migrate"

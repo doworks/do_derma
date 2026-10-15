@@ -2,26 +2,7 @@ import json
 
 import frappe
 
-from do_derma.patches.helpers import upsert_sidebar_item
-
-SIDEBAR_ITEM = {
-	"section": "Patient Actions",
-	"label": "Derma Chart",
-	"display_group": "Clinical",
-	"description": "Open the dermatology encounter chart with structured body map findings and treatments.",
-	"icon": "fa-regular fa-person-dots-from-line",
-	"item_behavior": "Route",
-	"route_type": "Custom",
-	"route_value": "do_derma.openChart",
-	"context_requirement": "patient",
-	"missing_context_behavior": "Disable",
-	"missing_context_message": "Select a patient first.",
-	"requires_app": "do_derma",
-	"sequence": 36,
-	"is_footer_action": 1,
-	"is_active": 1,
-}
-
+from do_derma.patches.helpers import sync_sidebar_items
 
 TEMPLATES = [
 	{
@@ -84,5 +65,5 @@ def _upsert_templates():
 
 
 def execute():
-	upsert_sidebar_item(SIDEBAR_ITEM)
+	sync_sidebar_items()
 	_upsert_templates()
