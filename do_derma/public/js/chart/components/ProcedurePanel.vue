@@ -238,7 +238,7 @@
                     <span>{{ row.derma_detail_text }}</span>
                   </button>
                   <button
-                    v-else-if="enableLabCases && rowAllowsSurfaces(row)"
+                    v-else-if="rowAllowsSurfaces(row)"
                     type="button"
                     class="detail-chip detail-chip-button"
                     data-test="procedure-edit-surfaces"
@@ -650,7 +650,7 @@ function rowMatchesDateFilter(row) {
 
 function rowNeedsLabFollowUp(row) {
   const status = String(row?.lab_case_status || "").toLowerCase()
-  if (Number(row?.lab_case_overdue || row?.is_lab_case_overdue || 0)) return true
+  if (Number(row?.lab_case_overdue || 0) > 0) return true
   if (["ready for delivery", "quality checked", "received in clinic"].includes(status)) return true
   return Boolean(row?.lab_case_recommended && !row?.lab_case_name)
 }
@@ -662,7 +662,7 @@ function rowMatchesLabFilter(row) {
   if (labFilter.value === "suggested") return Boolean(row?.lab_case_recommended)
   if (labFilter.value === "missing") return Boolean(row?.lab_case_recommended && !row?.lab_case_name)
   if (labFilter.value === "ready") return ["ready for delivery", "quality checked", "received in clinic"].includes(status)
-  if (labFilter.value === "overdue") return Boolean(Number(row?.lab_case_overdue || row?.is_lab_case_overdue || 0))
+  if (labFilter.value === "overdue") return Number(row?.lab_case_overdue || 0) > 0
   return true
 }
 
