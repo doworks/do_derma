@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -170,6 +171,12 @@ class TestAiDocuments(LetterHeadHelpers, DermaTestHelpers, IntegrationTestCase):
 	def test_a_letter_in_both_languages_is_marked_twice(self):
 		html = self._render_letter(self._make_marked_practitioner(), language="Both")
 		self.assertEqual(html.count('class="derma-signature"'), 2)
+
+	def test_names_in_the_patient_strip_wrap_so_the_letter_fits_the_page(self):
+		html = self._render_letter(self._make_marked_practitioner())
+		cells = re.findall(r'<td style="([^"]*)"><b>(\w+):</b>', html)
+		self.assertEqual([label for _, label in cells], ["Patient", "MRN", "Visit", "Clinician"])
+		self.assertEqual([label for style, label in cells if "nowrap" in style], ["MRN", "Visit"])
 
 	def test_unknown_kind_and_disabled_are_refused(self):
 		with self._enabled():

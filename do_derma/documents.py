@@ -96,7 +96,7 @@ Thank you for trusting me with your care. If you have any questions or concerns 
 
 # Jinja source of the seeded print templates. `values.body` is the AI text; "## " lines
 # become headings and "- " lines become bullets, everything else a paragraph.
-TEMPLATE_VERSION = 22
+TEMPLATE_VERSION = 23
 TEMPLATE_MARKER = "<!-- derma-ai-letter v"
 LETTER_TEMPLATE = f"""{TEMPLATE_MARKER}{TEMPLATE_VERSION} -->
 """ + """{{ derma_letterhead_open(practitioner) }}<div style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0 auto;color:#1a1a1a;line-height:1.4;padding:0 24px;">
@@ -107,10 +107,10 @@ LETTER_TEMPLATE = f"""{TEMPLATE_MARKER}{TEMPLATE_VERSION} -->
   {% if show_en %}
   <h1 style="font-size:20px;color:#1a3a5c;margin:0 0 14px;">{{ values.title }}</h1>
   <table style="width:100%;font-size:12px;margin-bottom:18px;border:1px solid #e5e7eb;"><tr>
-    <td style="padding:6px 8px;white-space:nowrap;"><b>Patient:</b> {{ patient.patient_name if patient else '' }}</td>
+    <td style="padding:6px 8px;"><b>Patient:</b> {{ patient.patient_name if patient else '' }}</td>
     <td style="padding:6px 8px;white-space:nowrap;"><b>MRN:</b> {{ patient.name if patient else '' }}</td>
     <td style="padding:6px 8px;white-space:nowrap;"><b>Visit:</b> {{ encounter.encounter_date if encounter else today }}</td>
-    <td style="padding:6px 8px;white-space:nowrap;"><b>Clinician:</b> {{ practitioner.practitioner_name if practitioner else '' }}</td>
+    <td style="padding:6px 8px;"><b>Clinician:</b> {{ practitioner.practitioner_name if practitioner else '' }}</td>
   </tr></table>
   <div style="font-size:12px;">
   {% for line in derma_letter_lines(values.body, practitioner.practitioner_name if practitioner else '') %}
