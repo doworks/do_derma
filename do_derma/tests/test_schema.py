@@ -83,3 +83,16 @@ class TestEnsureDermaSchema(IntegrationTestCase):
 			"Custom Field", {"dt": "Healthcare Practitioner", "fieldname": "custom_derma_letter_head"}, "insert_after"
 		)
 		self.assertEqual(insert_after, "custom_official_document_mark")
+
+	def test_annotation_type_accepts_derma_annotation(self):
+		"""The studio tags every encounter drawing "Derma Annotation"; without the option the
+		child-table save fails Select validation."""
+		ensure_derma_schema()
+		options = frappe.get_meta("Health Annotation Table").get_field("type").options.split("\n")
+		self.assertIn("Derma Annotation", options)
+		self.assertIn("Investigation", options)
+		self.assertIn("Treatment", options)
+
+		ensure_derma_schema()
+		options = frappe.get_meta("Health Annotation Table").get_field("type").options.split("\n")
+		self.assertEqual(options.count("Derma Annotation"), 1)

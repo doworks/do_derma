@@ -16,6 +16,7 @@ from do_derma.config.marker_size import MARKER_SIZE_FIELD
 
 DERMA_MODULE = "Do Derma"
 ASSESSMENT_MODE_OPTIONS = "\nStructured\nSOAP\nHP"
+DERMA_ANNOTATION_TYPE = "Derma Annotation"
 # `freehand` and `line` are last because their patches appended them there.
 MARKER_BEHAVIOR_OPTIONS = "\n".join(
 	[
@@ -504,6 +505,7 @@ def ensure_derma_schema() -> dict[str, list[str]]:
 	"""Create every missing custom field and property setter. Returns what was created."""
 	created: dict[str, list[str]] = {}
 	ensure_mode_options()
+	ensure_annotation_type_option()
 	_ensure_property_setters()
 	for doctype, specs in DERMA_CUSTOM_FIELDS.items():
 		if not frappe.db.exists("DocType", doctype):
@@ -538,6 +540,27 @@ def ensure_mode_options() -> None:
 		if options != ASSESSMENT_MODE_OPTIONS:
 			frappe.db.set_value("Custom Field", name, "options", ASSESSMENT_MODE_OPTIONS, update_modified=False)
 			frappe.clear_cache(doctype=doctype)
+
+
+def ensure_annotation_type_option() -> None:
+	"""do_health ships Health Annotation Table.type as Investigation/Treatment; the studio saves
+	encounter drawings as "Derma Annotation", so the option is appended to whatever the site has."""
+	if not frappe.db.exists("DocType", "Health Annotation Table"):
+		return
+	options = frappe.get_meta("Health Annotation Table").get_field("type").options.split("\n")
+	if DERMA_ANNOTATION_TYPE in options:
+		return
+	frappe.make_property_setter(
+		{
+			"doctype": "Health Annotation Table",
+			"fieldname": "type",
+			"property": "options",
+			"value": "\n".join([*options, DERMA_ANNOTATION_TYPE]),
+			"property_type": "Text",
+		},
+		is_system_generated=False,
+		module=DERMA_MODULE,
+	)
 
 
 def _ensure_property_setters() -> None:
