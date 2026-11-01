@@ -66,5 +66,5 @@ do_health_patient_overview_sections = ["do_derma.overview.section.get_patient_ov
 after_migrate = "do_derma.install.after_migrate"
 
 scheduler_events = {
-	"daily": ["do_derma.recordings.purge_old_audio"],
+	"daily": ["do_derma.recordings.purge_old_audio", "do_derma.learning.learn_style_rules"],
 }

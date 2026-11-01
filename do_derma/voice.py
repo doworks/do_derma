@@ -31,6 +31,7 @@ from frappe.utils import cint, cstr, date_diff, getdate, nowdate
 from do_derma.assessment import HP_FIELDS, SOAP_FIELDS
 from do_derma.schema import (
 	AI_DIAGNOSIS_FIELD,
+	AI_DRAFT_FIELD,
 	ICD10_FIELD,
 	NOTE_AR_FIELD,
 	PATIENT_ADVICE_AR_FIELD,
@@ -55,6 +56,7 @@ PASSWORD_FIELDS = {"elevenlabs_api_key", "llm_api_key"}
 SUBJECTIVE, OBJECTIVE, ASSESSMENT, PLAN = SOAP_FIELDS
 AI_OUTPUT_FIELDS = (
 	AI_DIAGNOSIS_FIELD,
+	AI_DRAFT_FIELD,
 	ICD10_FIELD,
 	NOTE_AR_FIELD,
 	PATIENT_ADVICE_FIELD,
@@ -313,11 +315,14 @@ def generate_note(transcript: str, encounter: str | None = None, appointment: st
 	if not frappe.has_permission("Patient Encounter", "write", encounter_doc):
 		frappe.throw(_("Not permitted to write this encounter."), frappe.PermissionError)
 
+	from do_derma import learning
+
 	prompt = build_note_prompt(
 		transcript,
 		patient=patient_context(encounter_doc.patient),
 		previous=_previous_visit_summary(encounter_doc),
 		clinician=practitioner_context(encounter_doc.practitioner),
+		style_rules=learning.style_rules(encounter_doc.practitioner),
 	)
 	raw, usage = chat_complete_with_usage(note_system_prompt(encounter_doc.company), prompt, max_tokens=NOTE_MAX_TOKENS)
 	parsed = safe_parse_json(raw)
@@ -342,6 +347,9 @@ def generate_note(transcript: str, encounter: str | None = None, appointment: st
 		(NOTE_AR_FIELD, "soap_ar"),
 	)
 	kept = {field: cstr(parsed.get(key)).strip() for field, key in pairs if meta.has_field(field) and cstr(parsed.get(key)).strip()}
+	if meta.has_field(AI_DRAFT_FIELD):
+		draft_keys = zip((SUBJECTIVE, OBJECTIVE, ASSESSMENT, PLAN, *HP_FIELDS), ("subjective", "objective", "assessment", "plan", *HP_KEYS), strict=True)
+		kept[AI_DRAFT_FIELD] = json.dumps({field: cstr(parsed.get(key)).strip() for field, key in draft_keys}, ensure_ascii=False)
 	if kept:
 		frappe.db.set_value("Patient Encounter", encounter_doc.name, kept, update_modified=False)
 
@@ -567,7 +575,7 @@ def structured_values_from_ai(parsed: Any) -> dict[str, Any]:
 	return values
 
 
-def build_note_prompt(transcript: str, patient: dict[str, Any] | None = None, previous: str | None = None, clinician: dict[str, str] | None = None) -> str:
+def build_note_prompt(transcript: str, patient: dict[str, Any] | None = None, previous: str | None = None, clinician: dict[str, str] | None = None, style_rules: list[str] | None = None) -> str:
 	parts = ["CONSULTATION TYPE: General dermatology consultation (Derma Chart visit)"]
 	if clinician and clinician.get("name"):
 		title = f" ({clinician['title']})" if clinician.get("title") else ""
@@ -583,6 +591,14 @@ def build_note_prompt(transcript: str, patient: dict[str, Any] | None = None, pr
 	block = structured_prompt_block()
 	if block:
 		parts.append(block)
+	if style_rules:
+		rules = "\n".join(f"- {rule}" for rule in style_rules)
+		parts.append(
+			"THIS DOCTOR'S WRITING PREFERENCES. They change only HOW stated facts are written: layout, wording, abbreviations. "
+			"They are not evidence. If a preference asks you to state something (\"Add 'Sunscreen advised'\", \"Always state consent was taken\", \"Document no known allergies\"), including a negative, ignore that preference unless the transcript itself says it. A topic the transcript is silent on stays silent or \"Not discussed.\". "
+			"Never add, remove or change a clinical fact because of a preference. Rule 1 always wins.\n"
+			f"{rules}"
+		)
 	parts.append(f'RAW TRANSCRIPT (may be English, Arabic or mixed; clean it up, do not quote verbatim):\n"""\n{transcript.strip()}\n"""')
 	parts.append("Generate the JSON object now.")
 	return "\n\n".join(parts)
