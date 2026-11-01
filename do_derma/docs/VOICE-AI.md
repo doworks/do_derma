@@ -6,7 +6,7 @@ Ambient scribe, three note formats, AI letters and a usage ledger, all inside th
 
 | Where | What |
 |---|---|
-| Assessment tab, top strip | **Dictate** records the visit from any microphone (picker when more than one). Live level meter: *No sound / Low – bring the mic closer / Good level / Too loud – move the mic away*. Warning + toast after 6 s of silence. Recording stops itself at the configured maximum. |
+| Assessment tab, top strip | **Dictate** records the visit from any microphone (picker when more than one). Live level meter: *No sound / Low – bring the mic closer / Good level / Too loud – move the mic away*. Warning + toast after 6 s of silence. Recording stops itself at the configured maximum. Dictation keeps running across the chart tabs, with its Stop / Pause strip shown on top of whichever tab is open; changing the visit stops it and keeps the audio on the earlier visit. |
 | After **Stop** | Transcript → AI note. One dictation drafts all three formats (Structured, SOAP, H&P) and saves them together on the encounter immediately (still a draft); the panel opens for editing. Diagnosis + ICD‑10 chip, collapsible Arabic note and WhatsApp follow-up (EN/AR, Copy). The follow-up is also saved on the encounter as **Patient Advice** (EN + AR, editable on the Patient Encounter form) and shown in a collapsible block on the Assessment tab. |
 | Format toggle | **Structured / SOAP / H&P**. The format on screen stays selected after dictation; switching afterwards shows each one already drafted. H&P = Chief Complaint, History of Presenting Complaint, Past Medical History, Examination Findings, Assessment, Management Plan. |
 | **Adjust** box | "Ask the AI to adjust the note" – rewrites the active format per the instruction and saves as draft. |

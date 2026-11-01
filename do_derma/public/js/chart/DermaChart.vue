@@ -118,18 +118,20 @@
 
       <section class="derma-console-grid no-side">
         <main class="derma-console-main">
+          <VoiceScribe
+            v-if="data.voice_scribe_enabled && assessmentPanel.encounter && !assessmentModeLocked"
+            :key="encounter.name"
+            :visible="activeSection === 'assessment'"
+            :context="contextArgs()"
+            :max-minutes="data.voice_scribe?.max_recording_minutes || 20"
+            :has-note="assessmentPanel.isFilled"
+            :saved="savedVoiceSummary"
+            @fill="applyVoiceNote"
+            @refined="applyRefinedNote"
+          />
           <template v-if="activeSection === 'assessment'">
             <div class="clinical-notes-grid" data-test="assessment-section">
               <section class="clinical-soap-stack">
-                <VoiceScribe
-                  v-if="data.voice_scribe_enabled && assessmentPanel.encounter && !assessmentModeLocked"
-                  :context="contextArgs()"
-                  :max-minutes="data.voice_scribe?.max_recording_minutes || 20"
-                  :has-note="assessmentPanel.isFilled"
-                  :saved="savedVoiceSummary"
-                  @fill="applyVoiceNote"
-                  @refined="applyRefinedNote"
-                />
                 <AssessmentPanel
                   :mode="assessmentPanel.mode"
                   :available-modes="assessmentPanel.availableModes"

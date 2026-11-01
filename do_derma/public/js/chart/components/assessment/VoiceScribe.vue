@@ -1,5 +1,5 @@
 <template>
-  <section class="voice-scribe" :data-state="state" data-test="voice-scribe">
+  <section v-show="visible || isBusy" class="voice-scribe" :data-state="state" data-test="voice-scribe">
     <div class="voice-scribe-row">
       <button
         v-if="state === 'idle' || state === 'ready' || state === 'failed'"
@@ -104,6 +104,8 @@ const LIVE_SEGMENT_SEC = 45
 const __ = window.__ || ((txt) => txt)
 
 const props = defineProps({
+  // False on the other chart tabs: the strip then shows only while a dictation is running.
+  visible: { type: Boolean, default: true },
   // {encounter, appointment, patient} - same shape the chart sends to every endpoint
   context: { type: Object, required: true },
   maxMinutes: { type: Number, default: 20 },
@@ -148,6 +150,7 @@ let liveTicker = null
 let live = { from: 0, pieces: [], failed: false }
 
 const isCapturing = computed(() => state.value === "recording" || state.value === "paused")
+const isBusy = computed(() => isCapturing.value || state.value === "transcribing" || state.value === "generating")
 const summary = computed(() => result.value || (props.saved?.diagnosis || props.saved?.icd10 ? props.saved : null))
 const meterZone = computed(() => {
   const { level, peak } = meter.value
@@ -179,9 +182,15 @@ onMounted(async () => {
   }
 })
 
+// The chart remounts this strip when the visit changes: the audio stays on the visit it was recorded in.
 onBeforeUnmount(() => {
   stopTickers()
-  recorder.cancel()
+  if (!isCapturing.value) {
+    recorder.cancel()
+    return
+  }
+  recorder.stop().then(({ blob }) => attachAudio(blob, props.context.encounter))
+  window.frappe?.show_alert?.({ message: __("Dictation stopped because the visit changed. The recording was kept on the earlier visit."), indicator: "orange" }, 8)
 })
 
 function stopTickers() {
@@ -329,6 +338,7 @@ function fail(message) {
   recorder.cancel()
   error.value = String(message).replace(/<[^>]+>/g, "")
   state.value = "failed"
+  if (!props.visible) window.frappe?.show_alert?.({ message: error.value, indicator: "red" }, 8)
 }
 
 function copy(text) {
