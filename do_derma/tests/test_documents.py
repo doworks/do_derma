@@ -72,6 +72,11 @@ class TestAiDocuments(LetterHeadHelpers, DermaTestHelpers, IntegrationTestCase):
 		self.assertIn("ADDRESSEE (referral recipient): Dr. Salman", prompt)
 		self.assertIn("DOCUMENT REQUESTED: Referral Letter", prompt)
 
+	def test_prompt_keeps_the_end_of_a_long_transcript(self):
+		context = documents.build_document_context(self.encounter)
+		context["transcript"] = "history " * 2000 + "review in four weeks"
+		self.assertIn("review in four weeks", documents.build_document_prompt("report", context))
+
 	def test_sign_off_uses_the_encounter_doctors_own_specialty(self):
 		practitioner = self.encounter.practitioner
 		original = frappe.db.get_value("Healthcare Practitioner", practitioner, ["custom_specialty", "designation"], as_dict=True)

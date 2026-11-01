@@ -22,6 +22,7 @@ from do_derma.schema import DERMA_MODULE, VOICE_TRANSCRIPT_FIELD
 
 TEMPLATE_PREFIX = "Derma AI "
 HISTORY_LIMIT = 5
+TRANSCRIPT_LIMIT = 40000  # about an hour of speech; a shorter cut drops the plan, which comes last
 KINDS: dict[str, dict[str, str]] = {
 	"report": {"title": "Medical Report", "title_ar": "تقرير طبي", "document_type": "Medical Report"},
 	"referral": {"title": "Referral Letter", "title_ar": "رسالة تحويل", "document_type": "Referral Letter"},
@@ -284,7 +285,7 @@ def build_document_prompt(kind: str, context: dict[str, Any]) -> str:
 	if context.get("note"):
 		parts.append(f'CURRENT VISIT NOTE:\n"""\n{context["note"]}\n"""')
 	if context.get("transcript"):
-		parts.append(f'TRANSCRIPT (grounding reference only, do not quote):\n"""\n{context["transcript"][:6000]}\n"""')
+		parts.append(f'TRANSCRIPT (grounding reference only, do not quote):\n"""\n{context["transcript"][:TRANSCRIPT_LIMIT]}\n"""')
 	parts.append("Return the JSON object now.")
 	return "\n\n".join(parts)
 
