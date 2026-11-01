@@ -10,14 +10,21 @@ const context = ref({})
 let unsubscribe = null
 
 function updateContext(source = {}) {
-  const route = window.frappe?.route_options || {}
-  const sidebar = window.doHealthSidebar?.getSelectedPatient?.() || window.do_health?.patientWatcher?.read?.() || {}
-  const next = source?.patient ? source : sidebar
+  const route = window.frappe?.route_options
+  const sidebar = source?.patient ? source : window.doHealthSidebar?.getSelectedPatient?.() || window.do_health?.patientWatcher?.read?.() || {}
+  // A route and the sidebar each name one whole visit: fields from both would mix two patients.
+  const next = route?.patient && !isOtherVisit(sidebar, route) ? route : sidebar
+  if (route?.patient && next === sidebar) window.frappe.route_options = null
   context.value = {
-    patient: route.patient || next.patient,
-    appointment: route.appointment || next.appointment,
-    encounter: route.encounter || next.encounter_name || next.encounter,
+    patient: next.patient,
+    appointment: next.appointment,
+    encounter: next.encounter_name || next.encounter,
   }
+}
+
+function isOtherVisit(sidebar, route) {
+  if (!sidebar.patient || !context.value.patient) return false
+  return sidebar.patient !== route.patient || Boolean(route.appointment && sidebar.appointment !== route.appointment)
 }
 
 onMounted(() => {

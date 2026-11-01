@@ -39,6 +39,7 @@
         :allergy-text="patientAllergyText"
         :insurance-label="insuranceStatusLabel"
         :has-session-context="hasSessionContext"
+        :starting="startingSession"
         :completing="completingSession"
         :pending="completionPending"
         :can-reopen="Boolean(reopenPermissions.can_reopen_encounter)"
@@ -47,6 +48,7 @@
         :latest-encounter="data.latest_encounter || ''"
         :visit-date="data.visit_date || ''"
         :visit-time="data.visit_time || ''"
+        @start-session="startSession"
         @complete="completeSession"
         @reopen="reopenSession"
         @open-latest="openLatestVisit"
@@ -155,6 +157,7 @@
                   @advice-language="(value) => (assessmentPanel.patientAdviceLanguage = value)"
                   @request-edit="assessmentPanel.editing = true"
                   @save="saveAssessment"
+                  @start-session="startSession"
                 />
                 <section class="chart-annotation-history encounter-annotation-history">
                   <header>
@@ -619,6 +622,7 @@ import { useBrokenImages } from "../shared/broken_images.js"
 import { nameDialogControls } from "../shared/dialog_a11y.js"
 import { runDialogAction } from "../shared/dialog_progress.js"
 import { serverErrorText } from "../shared/error_text.js"
+import { NEW_VISIT, confirmOtherDate, pickTodaysVisit, promptNewVisit } from "./session_dialogs.js"
 
 const __ = window.__ || ((txt) => txt)
 
@@ -692,6 +696,7 @@ const data = ref({})
 const loading = ref(false)
 const loadError = ref("")
 const syncingBillables = ref(false)
+const startingSession = ref(false)
 const completingSession = ref(false)
 // The studio arrives over the network on first use, so the buttons that open it say so.
 const annotationStudioBusy = ref(false)
@@ -1019,6 +1024,7 @@ const requiresBeforeAfterPhotos = computed(() =>
 watch(
   () => props.context,
   (context) => {
+    if (!loading.value && isChartShowing(context)) return
     if (context?.patient || context?.appointment || context?.encounter) load(context)
   },
   { immediate: true, deep: true }
@@ -1181,11 +1187,72 @@ function refresh() {
   return load(props.context)
 }
 
-function uploadPhotos() {
-  if (!patient.value.name || !encounter.value.name) {
-    frappe.msgprint(__("A patient encounter is required before uploading photos."))
-    return
+function isChartShowing(context) {
+  return Boolean(context?.encounter)
+    && context.encounter === encounter.value.name
+    && context.patient === patient.value.name
+    && context.appointment === appointment.value.name
+}
+
+// Shared by the Start Session buttons and the actions that need a session, so a click on
+// one while another is starting reuses the same request instead of opening a second visit.
+let sessionStart = null
+
+function startSession() {
+  sessionStart ||= requestSessionStart().finally(() => {
+    sessionStart = null
+  })
+  return sessionStart
+}
+
+async function ensureSession() {
+  return hasSessionContext.value || startSession()
+}
+
+async function requestSessionStart() {
+  const patientId = patient.value.name
+  const args = { patient: patientId, appointment: appointment.value.name }
+  startingSession.value = true
+  try {
+    const session = await resolveSessionStart(args)
+    if (!session?.encounter) return false
+    // The prompts are user-paced: the sidebar may have moved on to another patient.
+    if (patient.value.name !== patientId) return false
+    await load(session)
+    window.frappe.route_options = null
+    window.do_health?.patientWatcher?.write?.({
+      ...window.do_health.patientWatcher.read?.(),
+      ...session,
+      name: session.appointment,
+      encounter_name: session.encounter,
+    })
+    frappe.show_alert({ message: __("Session started."), indicator: "green" })
+    return true
+  } catch (error) {
+    frappe.show_alert({ message: serverErrorText(error, __("Could not start the session.")), indicator: "red" })
+    return false
+  } finally {
+    startingSession.value = false
   }
+}
+
+async function resolveSessionStart(args) {
+  const call = async (extra = {}) =>
+    (await frappe.call({ method: "do_derma.api.start_derma_session", args: { ...args, ...extra } })).message || {}
+  const session = await call()
+  if (session.confirm_date) {
+    return (await confirmOtherDate(session.confirm_date)) ? call({ confirm_other_date: 1 }) : null
+  }
+  if (session.encounter) return session
+  const visit = session.visits.length ? await pickTodaysVisit(session.visits) : NEW_VISIT
+  if (!visit) return null
+  if (visit !== NEW_VISIT) return call({ appointment: visit })
+  const details = await promptNewVisit(session.new_visit)
+  return details ? call(details) : null
+}
+
+async function uploadPhotos() {
+  if (!(await ensureSession())) return
   if (!window.frappe?.ui?.FileUploader) {
     frappe.msgprint(__("File uploads are unavailable in this session. Reload the page and try again."))
     return
@@ -1431,10 +1498,7 @@ async function ensureWorkspaceTab(tab, force = false) {
 }
 
 async function createProcedure() {
-  if (!hasSessionContext.value) {
-    frappe.msgprint(__("This visit needs a Patient Encounter before a procedure can be created."))
-    return
-  }
+  if (!(await ensureSession())) return
   const groups = groupTemplatesByCategory(procedureTemplates.value, categories.value)
   if (!groups.length) {
     frappe.msgprint(__("No derma procedure templates are configured."))
@@ -1511,6 +1575,7 @@ async function copyMarksFromLastVisit() {
     frappe.msgprint(__("This patient has no marks on an earlier visit."))
     return
   }
+  if (!(await ensureSession())) return
   const dialog = new frappe.ui.Dialog({
     title: __("Copy marks from last visit"),
     fields: [
@@ -1715,10 +1780,7 @@ async function loadAnnotationStudio() {
 
 async function openAnnotationStudio(anchor = {}) {
   if (isEncounterLocked.value) return
-  if (!encounter.value.name) {
-    frappe.msgprint(__("A Patient Encounter is required before saving annotation."))
-    return
-  }
+  if (!(await ensureSession())) return
   if (annotationStudioBusy.value) return
   annotationStudioBusy.value = true
   let openStudio

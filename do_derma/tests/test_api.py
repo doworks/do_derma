@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import nowdate, nowtime
+from frappe.utils import add_days, nowdate, nowtime
 
 import do_derma.api as api
 
@@ -1988,3 +1988,125 @@ class TestStudioCapturedPhotos(DermaPhotoHelpers, IntegrationTestCase):
 
 		with self.assertRaises(frappe.PermissionError):
 			self._capture()
+
+
+class TestStartDermaSession(DermaTestHelpers, IntegrationTestCase):
+	"""Opening the chart changes nothing; the doctor's Start Session opens the encounter and
+	moves the visit to In Room."""
+
+	def _make_appointment(self, patient, appointment_date=None):
+		return frappe.get_doc(
+			{
+				"doctype": "Patient Appointment",
+				"patient": patient,
+				"appointment_type": self._get_or_create_appointment_type(),
+				"practitioner": self._get_or_create_practitioner(),
+				"appointment_date": appointment_date or nowdate(),
+				"appointment_time": nowtime(),
+			}
+		).insert(ignore_permissions=True)
+
+	def _encounters(self, appointment):
+		return frappe.get_all("Patient Encounter", filters={"appointment": appointment.name}, pluck="name")
+
+	def _status(self, appointment):
+		return frappe.db.get_value("Patient Appointment", appointment.name, "status")
+
+	def test_opening_the_chart_starts_nothing(self):
+		patient = self._make_patient()
+		appointment = self._make_appointment(patient)
+		before = self._status(appointment)
+
+		context = api.ensure_chart_context(patient=patient, appointment=appointment.name)
+		chart = api.get_patient_derma_chart(patient_id=patient, appointment=appointment.name)
+
+		self.assertFalse(context["encounter"])
+		self.assertFalse(chart["encounter_id"])
+		self.assertEqual(self._encounters(appointment), [])
+		self.assertEqual(self._status(appointment), before)
+
+	def test_start_opens_the_encounter_and_moves_the_visit_in_room(self):
+		patient = self._make_patient()
+		appointment = self._make_appointment(patient)
+
+		session = api.start_derma_session(patient, appointment=appointment.name)
+
+		self.assertEqual(self._encounters(appointment), [session["encounter"]])
+		self.assertEqual(self._status(appointment), "In Room")
+		self.assertEqual(session["status"], "In Room")
+		self.assertEqual(session["appointment"], appointment.name)
+
+	def test_starting_twice_keeps_one_encounter(self):
+		patient = self._make_patient()
+		appointment = self._make_appointment(patient)
+
+		first = api.start_derma_session(patient, appointment=appointment.name)
+		second = api.start_derma_session(patient, appointment=appointment.name)
+
+		self.assertEqual(first["encounter"], second["encounter"])
+		self.assertEqual(len(self._encounters(appointment)), 1)
+
+	def test_another_day_asks_first(self):
+		patient = self._make_patient()
+		appointment = self._make_appointment(patient, appointment_date=add_days(nowdate(), 7))
+
+		answer = api.start_derma_session(patient, appointment=appointment.name)
+
+		self.assertEqual(answer, {"confirm_date": str(appointment.appointment_date)})
+		self.assertEqual(self._encounters(appointment), [])
+
+		session = api.start_derma_session(patient, appointment=appointment.name, confirm_other_date=1)
+		self.assertEqual(self._encounters(appointment), [session["encounter"]])
+
+	def test_refuses_another_patients_appointment(self):
+		appointment = self._make_appointment(self._make_patient())
+
+		with self.assertRaises(frappe.ValidationError):
+			api.start_derma_session(self._make_patient(), appointment=appointment.name)
+
+		self.assertEqual(self._encounters(appointment), [])
+
+	def test_without_an_appointment_uses_todays_only_visit(self):
+		patient = self._make_patient()
+		appointment = self._make_appointment(patient)
+
+		session = api.start_derma_session(patient)
+
+		self.assertEqual(session["appointment"], appointment.name)
+		self.assertEqual(self._status(appointment), "In Room")
+
+	def test_without_an_appointment_asks_between_several_visits(self):
+		patient = self._make_patient()
+		visits = {self._make_appointment(patient).name, self._make_appointment(patient).name}
+
+		answer = api.start_derma_session(patient)
+
+		self.assertEqual({row.name for row in answer["visits"]}, visits)
+		self.assertIn("new_visit", answer)
+
+	def test_with_no_visit_asks_for_details_then_books_a_walk_in(self):
+		patient = self._make_patient()
+
+		answer = api.start_derma_session(patient)
+		self.assertEqual(answer["visits"], [])
+
+		session = api.start_derma_session(
+			patient,
+			practitioner=self._get_or_create_practitioner(),
+			appointment_type=self._get_or_create_appointment_type(),
+		)
+
+		appointment = frappe.get_doc("Patient Appointment", session["appointment"])
+		self.assertEqual(appointment.patient, patient)
+		self.assertEqual(appointment.status, "In Room")
+		self.assertEqual(appointment.custom_booking_type, "Walked In")
+		self.assertEqual(frappe.db.get_value("Patient Encounter", session["encounter"], "appointment"), appointment.name)
+
+	def test_a_chart_write_still_opens_the_session(self):
+		patient = self._make_patient()
+		appointment = self._make_appointment(patient)
+
+		photo_encounter = api._ensure_encounter(appointment=appointment.name, patient=patient)
+
+		self.assertEqual(self._encounters(appointment), [photo_encounter])
+		self.assertEqual(self._status(appointment), "In Room")

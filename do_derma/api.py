@@ -6,9 +6,11 @@ import re
 from typing import Any
 
 import frappe
+from do_health.api.appointment_lifecycle import get_status_by_code, get_terminal_statuses
 from do_health.api.appointment_methods import create_encounter_for_appointment
+from do_health.api.boot import get_current_user_practitioner
 from frappe import _
-from frappe.utils import cint, cstr, flt, now_datetime, nowdate
+from frappe.utils import cint, cstr, flt, getdate, now_datetime, nowdate, nowtime
 from frappe.utils.file_manager import save_file
 
 from do_derma import assessment, previous_visits, reopen, voice
@@ -331,30 +333,31 @@ def _appointment_fields() -> list[str]:
 	return fields
 
 
-def _ensure_encounter(appointment: str | None = None, patient: str | None = None) -> str | None:
+def _find_encounter(appointment: str | None = None, patient: str | None = None) -> str | None:
+	"""The visit's encounter, if it has one. Never creates: opening a chart starts nothing."""
 	if appointment:
-		existing = frappe.db.get_value(
+		return frappe.db.get_value(
 			"Patient Encounter",
 			{"appointment": appointment, "docstatus": ["<", 2]},
 			"name",
 			order_by="creation desc",
 		)
-		if existing:
-			return existing
+	return frappe.db.get_value(
+		"Patient Encounter",
+		{"patient": patient, "docstatus": 0},
+		"name",
+		order_by="creation desc",
+	)
 
-	if not appointment and patient:
-		existing = frappe.db.get_value(
-			"Patient Encounter",
-			{"patient": patient, "docstatus": 0},
-			"name",
-			order_by="creation desc",
-		)
-		if existing:
-			return existing
-		return None
 
-	response = create_encounter_for_appointment(appointment=appointment, patient=patient)
-	return response.get("name") if isinstance(response, dict) else None
+def _ensure_encounter(appointment: str | None = None, patient: str | None = None) -> str | None:
+	"""Start the appointment's session: its encounter is created and the visit goes In Room."""
+	existing = _find_encounter(appointment=appointment, patient=patient)
+	if existing or not appointment:
+		return existing
+	return create_encounter_for_appointment(
+		appointment=appointment, patient=patient, skip_practitioner_availability=1
+	).get("name")
 
 
 def _get_visit_context(
@@ -375,9 +378,9 @@ def _get_visit_context(
 				_("Appointment {0} belongs to a different patient.").format(appointment), frappe.ValidationError
 			)
 		patient = patient or appointment_doc.patient
-		encounter = _ensure_encounter(appointment=appointment, patient=patient)
+		encounter = _find_encounter(appointment=appointment, patient=patient)
 	elif patient:
-		encounter = _ensure_encounter(patient=patient)
+		encounter = _find_encounter(patient=patient)
 	else:
 		frappe.throw(_("Patient, appointment, or encounter is required."))
 
@@ -2363,7 +2366,7 @@ def ensure_chart_context(
 	patient: str | None = None, appointment: str | None = None, encounter: str | None = None
 ):
 	_ensure_clinical_access()
-	"""Ensure an active Patient Encounter and return canonical derma chart route context."""
+	"""The canonical derma chart route context. Starts nothing: see start_derma_session."""
 
 	context = _get_visit_context(patient=patient, appointment=appointment, encounter=encounter)
 	return {
@@ -2372,6 +2375,95 @@ def ensure_chart_context(
 		"encounter": context["encounter_id"],
 		"route": "derma-chart",
 	}
+
+
+@frappe.whitelist()
+def start_derma_session(
+	patient: str,
+	appointment: str | None = None,
+	confirm_other_date: int = 0,
+	practitioner: str | None = None,
+	appointment_type: str | None = None,
+	appointment_category: str | None = None,
+):
+	"""The doctor's start of a visit: opens its encounter, which moves it to In Room.
+
+	Without an appointment it uses the patient's one open visit today. When it cannot
+	tell which visit is meant it answers with `visits` and `new_visit` for the chart to ask,
+	and with `confirm_date` before starting a visit dated another day."""
+	_ensure_clinical_access()
+	if practitioner:
+		appointment = _book_chart_visit(patient, practitioner, appointment_type, appointment_category)
+	if appointment:
+		return _start_appointment_session(patient, appointment, cint(confirm_other_date))
+
+	visits = _get_todays_open_visits(patient)
+	if len(visits) == 1:
+		return _start_appointment_session(patient, visits[0].name, 1)
+	return {
+		"visits": visits,
+		"new_visit": {
+			"practitioner": get_current_user_practitioner(),
+			"appointment_type": frappe.db.get_single_value("Do Health Settings", "default_appointment_type"),
+		},
+	}
+
+
+def _start_appointment_session(patient: str, appointment: str, confirm_other_date: int) -> dict[str, Any]:
+	context = _get_visit_context(patient=patient, appointment=appointment)
+	visit_date = context["appointment"].get("appointment_date")
+	if not context["encounter_id"] and not confirm_other_date and getdate(visit_date) != getdate(nowdate()):
+		return {"confirm_date": cstr(visit_date)}
+	return {
+		"patient": context["patient_id"],
+		"appointment": appointment,
+		"encounter": context["encounter_id"] or _ensure_encounter(appointment=appointment, patient=patient),
+		"status": frappe.db.get_value("Patient Appointment", appointment, "status"),
+	}
+
+
+def _get_todays_open_visits(patient: str) -> list[dict[str, Any]]:
+	"""Today's bookings a session can start on: not cancelled, missed or finished."""
+	return frappe.get_all(
+		"Patient Appointment",
+		filters={
+			"patient": patient,
+			"appointment_date": nowdate(),
+			"status": ["not in", list(get_terminal_statuses())],
+		},
+		fields=["name", "appointment_time", "practitioner_name", "appointment_type"],
+		order_by="appointment_time asc, creation asc",
+	)
+
+
+def _book_chart_visit(
+	patient: str, practitioner: str, appointment_type: str | None, appointment_category: str | None
+) -> str:
+	"""A session started with no booking is a walk-in with this doctor, now."""
+	if not appointment_type:
+		frappe.throw(_("An appointment type is required to start the session."))
+	doc = frappe.new_doc("Patient Appointment")
+	doc.update(
+		{
+			"patient": patient,
+			"appointment_for": "Practitioner",
+			"practitioner": practitioner,
+			"appointment_type": appointment_type,
+			"appointment_date": nowdate(),
+			"appointment_time": nowtime(),
+			"duration": cint(frappe.db.get_value("Appointment Type", appointment_type, "default_duration")),
+			"company": frappe.defaults.get_user_default("Company")
+			or frappe.db.get_single_value("Global Defaults", "default_company"),
+			"status": get_status_by_code("scheduled"),
+		}
+	)
+	if doc.meta.has_field("custom_booking_type"):
+		doc.custom_booking_type = "Walked In"
+	if doc.meta.has_field("custom_appointment_category"):
+		doc.custom_appointment_category = appointment_category or "First Time"
+	doc.flags.skip_practitioner_availability = True
+	doc.insert()
+	return doc.name
 
 
 @frappe.whitelist()
@@ -3894,8 +3986,7 @@ def save_chart_mark(values: str | dict[str, Any]):
 	if not payload.get("patient"):
 		frappe.throw(_("Patient is required."))
 	if not payload.get("encounter") and payload.get("appointment"):
-		context = ensure_chart_context(payload.get("patient"), payload.get("appointment"))
-		payload["encounter"] = context.get("encounter")
+		payload["encounter"] = _ensure_encounter(appointment=payload.get("appointment"), patient=payload.get("patient"))
 	if payload.get("encounter") and not payload.get("appointment"):
 		payload["appointment"] = frappe.db.get_value(
 			"Patient Encounter", payload.get("encounter"), "appointment"
@@ -4372,8 +4463,7 @@ def create_photo_set(values: str | dict[str, Any]):
 	if not payload.get("patient"):
 		frappe.throw(_("Patient is required."))
 	if not payload.get("encounter"):
-		context = ensure_chart_context(payload.get("patient"), payload.get("appointment"))
-		payload["encounter"] = context.get("encounter")
+		payload["encounter"] = _ensure_encounter(appointment=payload.get("appointment"), patient=payload.get("patient"))
 	_ensure_encounter_open(payload.get("encounter"))
 
 	doc = frappe.new_doc("Derma Photo Set")

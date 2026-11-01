@@ -55,11 +55,22 @@
 
     <div class="encounter-actions">
       <button
-        v-if="!isCompleted"
+        v-if="!hasSessionContext"
+        type="button"
+        class="primary"
+        data-test="start-session"
+        :disabled="starting"
+        @click="$emit('start-session')"
+      >
+        <i class="fa-solid fa-play" aria-hidden="true"></i>
+        {{ starting ? __("Starting...") : __("Start Session") }}
+      </button>
+      <button
+        v-else-if="!isCompleted"
         type="button"
         class="primary"
         data-test="complete-session"
-        :disabled="!hasSessionContext || completing || pending"
+        :disabled="completing || pending"
         @click="$emit('complete')"
       >
         {{ completing ? __("Completing...") : __("Complete Encounter") }}
@@ -112,6 +123,7 @@ const props = defineProps({
   allergyText: { type: String, default: "" },
   insuranceLabel: { type: String, default: "" },
   hasSessionContext: { type: Boolean, default: false },
+  starting: { type: Boolean, default: false },
   completing: { type: Boolean, default: false },
   // A completion awaiting its confirm dialog: the button refuses a second click without
   // claiming that completion is under way.
@@ -125,7 +137,7 @@ const props = defineProps({
   visitTime: { type: String, default: "" },
 })
 
-defineEmits(["complete", "reopen", "open-latest", "alert-action"])
+defineEmits(["start-session", "complete", "reopen", "open-latest", "alert-action"])
 
 const isCompleted = computed(() => Number(props.encounter.docstatus) === 1)
 const isLatest = computed(() => !props.latestEncounter || props.latestEncounter === props.encounter.name)

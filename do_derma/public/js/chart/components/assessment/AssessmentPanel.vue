@@ -6,15 +6,15 @@
     <div v-if="loading" class="empty-state">{{ __("Loading assessment...") }}</div>
 
     <div v-else-if="!hasEncounter" class="empty-state">
-      <p>{{ __("No encounter yet for this appointment.") }}</p>
+      <p>{{ __("This visit's session has not started yet.") }}</p>
       <button
         type="button"
         class="primary"
         data-test="assessment-start"
         :disabled="saving"
-        @click="$emit('request-edit')"
+        @click="$emit('start-session')"
       >
-        {{ __("Start Assessment") }}
+        {{ __("Start Session") }}
       </button>
     </div>
 
@@ -146,7 +146,7 @@ const props = defineProps({
   patientAdviceLanguage: { type: String, default: "Auto" },
 })
 
-const emit = defineEmits(["request-edit", "save", "advice-toggled", "advice-language"])
+const emit = defineEmits(["request-edit", "save", "start-session", "advice-toggled", "advice-language"])
 
 // Patient advice prints only when the doctor opts in - the box is a field on the
 // encounter (Allow on Submit), so the choice survives and shows on the form too.
