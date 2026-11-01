@@ -81,7 +81,9 @@ class TestGenerateNote(DermaTestHelpers, IntegrationTestCase):
 		transcript = "Patient complains of itchy hands for two weeks after using a new detergent."
 		with self._enabled(), patch.object(voice.requests, "post", return_value=fake) as post:
 			out = voice.generate_note(transcript, encounter=self.encounter.name)
-		sent = post.call_args.kwargs["json"]
+		self.assertEqual(post.call_count, 2)  # clinical note, then Arabic note + after-visit messages
+		sent = post.call_args_list[0].kwargs["json"]
+		self.assertEqual(sent["max_tokens"], voice.NOTE_MAX_TOKENS)
 		self.assertEqual(sent["messages"][0]["content"], voice.note_system_prompt(self.encounter.company))
 		self.assertNotIn("{clinic}", sent["messages"][0]["content"])
 		self.assertIn(transcript, sent["messages"][1]["content"])
@@ -108,6 +110,16 @@ class TestGenerateNote(DermaTestHelpers, IntegrationTestCase):
 		self.assertEqual(reloaded["ai_diagnosis"], NOTE["diagnosis"])
 		self.assertEqual(reloaded["icd10"], NOTE["icd10"])
 		self.assertEqual(reloaded["note_ar"], NOTE["soap_ar"])
+
+	def test_patient_language_failure_keeps_the_note(self):
+		note = MagicMock(status_code=200)
+		note.json.return_value = {"choices": [{"message": {"content": json.dumps({k: v for k, v in NOTE.items() if k not in ("soap_ar", "followup_en", "followup_ar")})}}]}
+		down = MagicMock(status_code=500, text="provider down")
+		with self._enabled(), patch.object(voice.requests, "post", side_effect=[note, down]):
+			out = voice.generate_note("Patient complains of itchy hands for two weeks.", encounter=self.encounter.name)
+		self.assertEqual(out["values"][SOAP_FIELDS[0]], NOTE["subjective"])
+		self.assertEqual(out["soap_ar"], "")
+		self.assertEqual(out["followup_en"], "")
 
 	def test_unparseable_reply_raises(self):
 		fake = MagicMock(status_code=200)

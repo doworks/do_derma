@@ -5,7 +5,8 @@ Two whitelisted steps, both gated by Derma Settings.enable_voice_scribe:
 1. ``transcribe``   - the browser posts one WAV; ElevenLabs Scribe returns text
                       (auto-detects English / Arabic / mixed).
 2. ``generate_note`` - an OpenAI-compatible chat completion turns the transcript
-                      into a SOAP draft (+ diagnosis, ICD-10, Arabic follow-up).
+                      into SOAP and H&P drafts (+ diagnosis, ICD-10); a second
+                      call writes the Arabic note and after-visit messages.
                       Nothing is saved except the raw transcript for audit; the
                       doctor reviews the draft and saves through the normal
                       assessment flow (``do_derma.api.set_derma_assessment``).
@@ -47,6 +48,8 @@ MAX_AUDIO_BYTES = 100 * 1024 * 1024
 MIN_AUDIO_BYTES = 800  # below this the WAV is header + silence
 # ponytail: Groq on_demand tier counts prompt+max_tokens against an 8k TPM cap - keep headroom
 MAX_TOKENS = 5000
+# The fact list plus two full formats reach about 4k tokens on a 10-minute visit; longer visits need room.
+NOTE_MAX_TOKENS = 12000
 PASSWORD_FIELDS = {"elevenlabs_api_key", "llm_api_key"}
 
 SUBJECTIVE, OBJECTIVE, ASSESSMENT, PLAN = SOAP_FIELDS
@@ -78,19 +81,30 @@ RULES:
    H&P - chief_complaint, history_of_presenting_complaint, past_medical_history, examination_findings, hp_assessment, management_plan. Every H&P section must be present.
    HOUSE STYLE for both, matching the notes this clinic already writes:
    - Clinical register with the subject dropped: "Reports bilateral lower limb swelling.", "Describes heaviness after massage.", "Bilateral swelling noted." Never "The patient has been experiencing...".
-   - Carry every detail the transcript gives: duration, quantities, frequency, what improves or worsens it, what has already been tried and with what effect. Do not compress the history into one sentence.
+   - Carry every detail the transcript gives: duration, onset and trigger, quantities, counts and sizes, frequency, what improves or worsens it, what has already been tried and with what effect (each past treatment with its dose, duration, response and side effects). Do not compress the history into one sentence.
+   - Length follows the consultation: a long consultation gives a long note and a short dictation stays short. Never summarise to save space and never pad a short dictation.
+   - SOAP and H&P each stand alone, because the doctor may print only one. H&P must carry the same facts as SOAP; never shorten one because the other already has the detail.
+   - Keep every safety point that was said: pregnancy status and contraception (methods and timing), pregnancy tests required, drugs that must not be combined or repeated, allergies, warning signs to report, activities to avoid. Keep every investigation requested, with its timing, and social or psychological impact when mentioned.
    - A stated negative is documented AS a negative, never as missing: "No significant medical history. No hypertension or diabetes mellitus.", "Not pregnant and not planning pregnancy." Write "Not discussed." ONLY where the transcript is genuinely silent on that whole section.
    - hp_assessment / assessment: the working diagnosis with the reasoning behind it, and what is explicitly NOT present or NOT required.
    - management_plan / plan: one measure per sentence, each self-contained (what, how, how long), including counselling and lifestyle advice. When the transcript states a review or follow-up interval, it is the LAST sentence of the section and is never dropped.
 4. diagnosis: short primary diagnosis line. icd10: the most likely ICD-10-CM code with a brief label, e.g. "L70.0 - Acne vulgaris". If uncertain, give the best-fit code.
-5. soap_ar: a faithful MEDICAL Arabic translation of the four sections, labelled "الشكوى والتاريخ", "الفحص", "التقييم", "الخطة" (clinical Arabic as used in {country}), not a summary.
-6. followup_en: a warm, patient-friendly after-visit message in simple English, ready to send via WhatsApp from the clinic: greeting, 3-6 clear instruction bullets, red-flag warning when relevant, sign-off from {clinic}. Plain text with "- " bullets, max ~180 words.
-7. followup_ar: the same message in natural, warm Arabic as used with patients in {country}.
-8. If the transcript is clearly a DOCTOR DICTATION (structured monologue, no patient dialogue), still produce the same output structure.
-9. structured: an object keyed by the STRUCTURED FIELDS listed in the user message, filling the clinic's own coded assessment from the same visit. Text fields take clinical text in the house style above. Fields marked LIST take an array of short clinical terms, one concept per item, e.g. ["Acne vulgaris"] - no sentences, no codes. Omit a key entirely when the transcript says nothing for it; never invent a term to fill a field.
+5. If the transcript is clearly a DOCTOR DICTATION (structured monologue, no patient dialogue), still produce the same output structure.
+6. structured: an object keyed by the STRUCTURED FIELDS listed in the user message, filling the clinic's own coded assessment from the same visit. Text fields take clinical text in the house style above. Fields marked LIST take an array of short clinical terms, one concept per item, e.g. ["Acne vulgaris"] - no sentences, no codes. Omit a key entirely when the transcript says nothing for it; never invent a term to fill a field.
+7. clinical_facts: write this key FIRST. An exhaustive list of every separate clinical fact stated in the transcript, one short item each, in order: onset, trigger, course, every past treatment with dose, duration, response and side effect, history, medications, allergies, family and social history, pregnancy and contraception, each examination finding with counts and sizes, each stated negative, the reasoning, each safety warning and requirement, each investigation, each treatment, the follow-up. List only what was said; a topic that was not mentioned gets no item. Then write subjective, objective, assessment, plan AND every H&P section so that each format on its own contains every item on the list. subjective always ends with its "Past Medical History:" line carrying past history, surgery, medications, allergies, family and social history and pregnancy status, even though H&P has its own section for them. plan and management_plan each carry every safety requirement and warning in full, with numbers (how many methods, how many tests, what must not be combined). A section with no item is "Not discussed." - never "No significant history" unless that was said.
 
 Respond with ONLY a valid JSON object (no markdown fences, no commentary) with exactly these keys:
-{"subjective": "...", "objective": "...", "assessment": "...", "plan": "...", "chief_complaint": "...", "history_of_presenting_complaint": "...", "past_medical_history": "...", "examination_findings": "...", "hp_assessment": "...", "management_plan": "...", "diagnosis": "...", "icd10": "...", "soap_ar": "...", "followup_en": "...", "followup_ar": "...", "structured": {}}"""
+{"clinical_facts": ["..."], "subjective": "...", "objective": "...", "assessment": "...", "plan": "...", "chief_complaint": "...", "history_of_presenting_complaint": "...", "past_medical_history": "...", "examination_findings": "...", "hp_assessment": "...", "management_plan": "...", "diagnosis": "...", "icd10": "...", "structured": {}}"""
+
+# Asked separately: in one call with the clinical note, the note came out thinner and dropped stated facts.
+PATIENT_LANGUAGE_PROMPT = """You are SOULVD Health, working for {clinic}, a dermatology clinic in {country}. You receive a finished English SOAP note as JSON. Use only what it says; never invent findings.
+
+1. soap_ar: a faithful MEDICAL Arabic translation of the four sections, labelled "الشكوى والتاريخ", "الفحص", "التقييم", "الخطة" (clinical Arabic as used in {country}), not a summary.
+2. followup_en: a warm, patient-friendly after-visit message in simple English, ready to send via WhatsApp from the clinic: greeting, 3-6 clear instruction bullets, red-flag warning when relevant, sign-off from {clinic}. Plain text with "- " bullets, max ~180 words.
+3. followup_ar: the same message in natural, warm Arabic as used with patients in {country}.
+
+Respond with ONLY a valid JSON object (no markdown fences, no commentary) with exactly these keys:
+{"soap_ar": "...", "followup_en": "...", "followup_ar": "..."}"""
 
 
 def clinic_context(company: str | None = None) -> dict[str, str]:
@@ -305,13 +319,14 @@ def generate_note(transcript: str, encounter: str | None = None, appointment: st
 		previous=_previous_visit_summary(encounter_doc),
 		clinician=practitioner_context(encounter_doc.practitioner),
 	)
-	raw, usage = chat_complete_with_usage(note_system_prompt(encounter_doc.company), prompt)
+	raw, usage = chat_complete_with_usage(note_system_prompt(encounter_doc.company), prompt, max_tokens=NOTE_MAX_TOKENS)
 	parsed = safe_parse_json(raw)
 	if not parsed or not (parsed.get("assessment") or parsed.get("subjective")):
 		record_usage("Note", encounter=encounter_doc.name, patient=encounter_doc.patient, status="Failed", error="unparseable reply", **usage)
 		frappe.log_error(title="Voice scribe: unparseable note", message=raw[:4000])
 		frappe.throw(_("The AI note could not be generated. Please try again."))
 	record_usage("Note", encounter=encounter_doc.name, patient=encounter_doc.patient, **usage)
+	parsed.update(patient_language(parsed, encounter_doc))
 
 	meta = frappe.get_meta("Patient Encounter")
 	if meta.has_field(TRANSCRIPT_FIELD):
@@ -346,6 +361,20 @@ def generate_note(transcript: str, encounter: str | None = None, appointment: st
 		"followup_en": cstr(parsed.get("followup_en")).strip(),
 		"followup_ar": cstr(parsed.get("followup_ar")).strip(),
 	}
+
+
+def patient_language(note: dict[str, Any], encounter_doc) -> dict[str, str]:
+	"""Arabic note and after-visit messages. A failure here leaves them blank and keeps the clinical note."""
+	sections = {key: note.get(key) for key in ("subjective", "objective", "assessment", "plan", "diagnosis")}
+	try:
+		raw, usage = chat_complete_with_usage(fill_clinic(PATIENT_LANGUAGE_PROMPT, encounter_doc.company), json.dumps(sections, ensure_ascii=False))
+	except Exception:  # noqa: BLE001 - the doctor keeps the note
+		frappe.log_error(title="Voice scribe: patient language failed")
+		return {}
+	parsed = safe_parse_json(raw)
+	failed = {"status": "Failed", "error": "unparseable reply"} if not parsed else {}
+	record_usage("Note", encounter=encounter_doc.name, patient=encounter_doc.patient, **failed, **usage)
+	return {key: parsed.get(key) for key in ("soap_ar", "followup_en", "followup_ar")} if parsed else {}
 
 
 REFINE_SYSTEM_PROMPT = """You edit a dermatology clinical note for {clinic} exactly as the doctor instructs.
@@ -563,7 +592,7 @@ def chat_complete(system: str, user: str, temperature: float = 0.3) -> str:
 	return chat_complete_with_usage(system, user, temperature)[0]
 
 
-def chat_complete_with_usage(system: str, user: str, temperature: float = 0.3) -> tuple[str, dict[str, Any]]:
+def chat_complete_with_usage(system: str, user: str, temperature: float = 0.3, max_tokens: int = MAX_TOKENS) -> tuple[str, dict[str, Any]]:
 	"""Returns (content, usage) where usage = {model, prompt_tokens, completion_tokens, duration_ms}."""
 	started = time.monotonic()
 	key = _setting("llm_api_key")
@@ -577,7 +606,7 @@ def chat_complete_with_usage(system: str, user: str, temperature: float = 0.3) -
 		json={
 			"model": model,
 			"temperature": temperature,
-			"max_tokens": MAX_TOKENS,
+			"max_tokens": max_tokens,
 			"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
 		},
 		timeout=180,
