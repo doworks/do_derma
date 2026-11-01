@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import patch
 
 import frappe
@@ -137,3 +138,8 @@ class TestAssessmentPrintFormat(DermaTestHelpers, IntegrationTestCase):
 		self.assertIn(frappe.db.get_value("Patient", patient, "patient_name"), printed)
 		self.assertIn("Scaly plaques on both hands", printed)
 		self.assertIn('class="derma-structured"', printed)
+
+	def test_names_in_the_patient_strip_wrap_so_the_note_fits_the_page(self):
+		cells = re.findall(r'<td style="([^"]*)"><b>(\w+):</b>', note.TEMPLATE)
+		self.assertEqual([label for _, label in cells], ["Patient", "MRN", "Visit", "Clinician"])
+		self.assertEqual([label for style, label in cells if "nowrap" in style], ["MRN", "Visit"])

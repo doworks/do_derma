@@ -8,10 +8,10 @@ from frappe.utils import cint, cstr
 
 from do_derma import api
 from do_derma.overview.text import short_date
+from do_derma.schema import DERMA_ANNOTATION_TYPE
 
 MAX_PHOTOS = 6
 PHOTO_TYPE_RANK = {"Before": 0, "After": 0, "Visit": 1}
-DERMA_ANNOTATION_TYPE = "Derma Annotation"
 
 
 def get_photos(

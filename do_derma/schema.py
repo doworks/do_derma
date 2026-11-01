@@ -16,6 +16,7 @@ from do_derma.config.marker_size import MARKER_SIZE_FIELD
 
 DERMA_MODULE = "Do Derma"
 ASSESSMENT_MODE_OPTIONS = "\nStructured\nSOAP\nHP"
+DERMA_ANNOTATION_TYPE = "Derma Annotation"
 # `freehand` and `line` are last because their patches appended them there.
 MARKER_BEHAVIOR_OPTIONS = "\n".join(
 	[
@@ -51,8 +52,32 @@ PATIENT_ADVICE_LANGUAGES = "Auto\nEnglish\nArabic\nBoth"  # Auto = the language 
 AI_DIAGNOSIS_FIELD = "custom_derma_ai_diagnosis"
 ICD10_FIELD = "custom_derma_icd10"
 NOTE_AR_FIELD = "custom_derma_note_ar"
+PRESCRIPTION_DIAGNOSIS_FIELD = "custom_derma_prescription_diagnosis"
 MODE_FIELD = "custom_derma_assessment_mode"
 PRACTITIONER_DEFAULT_FIELD = "custom_derma_default_assessment_mode"
+SIGNATURE_WAIVED_FIELD = "custom_derma_signature_waived"
+WAIVER_REASON_FIELD = "custom_derma_waiver_reason"
+LETTER_HEAD_FIELD = "custom_derma_letter_head"
+
+# A consent saved without a digital signature (paper, verbal). The health apps refuse to submit an
+# unsigned consent, so a waived one stays a draft and these fields say why.
+CONSENT_WAIVER_FIELDS: list[dict[str, Any]] = [
+	{
+		"fieldname": SIGNATURE_WAIVED_FIELD,
+		"fieldtype": "Check",
+		"label": "Signature Waived",
+		"insert_after": "relationship",
+		"read_only": 1,
+	},
+	{
+		"fieldname": WAIVER_REASON_FIELD,
+		"fieldtype": "Small Text",
+		"label": "Waiver Reason",
+		"insert_after": SIGNATURE_WAIVED_FIELD,
+		"read_only": 1,
+		"depends_on": f"eval:doc.{SIGNATURE_WAIVED_FIELD}",
+	},
+]
 
 DERMA_CUSTOM_FIELDS: dict[str, list[dict[str, Any]]] = {
 	"Patient Encounter": [
@@ -221,6 +246,14 @@ DERMA_CUSTOM_FIELDS: dict[str, list[dict[str, Any]]] = {
 			"insert_after": ICD10_FIELD,
 			"no_copy": 1,
 			"description": "Arabic version of the note drafted by the voice scribe.",
+		},
+		{
+			"fieldname": PRESCRIPTION_DIAGNOSIS_FIELD,
+			"fieldtype": "Small Text",
+			"label": "Prescription Diagnosis",
+			"insert_after": NOTE_AR_FIELD,
+			"no_copy": 1,
+			"description": "Printed on the prescription. Starts as a copy of the assessment's diagnosis.",
 		},
 	],
 	# do_health owns this child table; do_derma adds the column that carries the badge legend
@@ -410,6 +443,20 @@ DERMA_CUSTOM_FIELDS: dict[str, list[dict[str, Any]]] = {
 			"insert_after": "custom_derma_print_procedure_variables",
 		},
 	],
+	# One consent can cover several procedures. do_health's Consent Form links only one, so derma
+	# owns this table; clinical_procedure still holds the first row for do_health's own readers.
+	"Consent Form": [
+		{
+			"fieldname": "custom_derma_procedures",
+			"fieldtype": "Table",
+			"label": "Procedures",
+			"options": "Derma Consent Procedure",
+			"insert_after": "clinical_procedure",
+			"hidden": 1,
+		},
+		*CONSENT_WAIVER_FIELDS,
+	],
+	"Encounter Consent": CONSENT_WAIVER_FIELDS,
 	"Healthcare Practitioner": [
 		{
 			"fieldname": "custom_derma_default_assessment_mode",
@@ -418,6 +465,14 @@ DERMA_CUSTOM_FIELDS: dict[str, list[dict[str, Any]]] = {
 			"options": ASSESSMENT_MODE_OPTIONS,
 			"insert_after": "practitioner_name",
 			"description": "Applies to new encounters only. It never overrides a mode already stamped on a visit.",
+		},
+		{
+			"fieldname": LETTER_HEAD_FIELD,
+			"fieldtype": "Link",
+			"label": "Letter Head",
+			"options": "Letter Head",
+			"insert_after": "custom_official_document_mark",
+			"description": "Derma chart prints use this instead of the site's default Letter Head.",
 		},
 	],
 }
@@ -450,6 +505,7 @@ def ensure_derma_schema() -> dict[str, list[str]]:
 	"""Create every missing custom field and property setter. Returns what was created."""
 	created: dict[str, list[str]] = {}
 	ensure_mode_options()
+	ensure_annotation_type_option()
 	_ensure_property_setters()
 	for doctype, specs in DERMA_CUSTOM_FIELDS.items():
 		if not frappe.db.exists("DocType", doctype):
@@ -484,6 +540,27 @@ def ensure_mode_options() -> None:
 		if options != ASSESSMENT_MODE_OPTIONS:
 			frappe.db.set_value("Custom Field", name, "options", ASSESSMENT_MODE_OPTIONS, update_modified=False)
 			frappe.clear_cache(doctype=doctype)
+
+
+def ensure_annotation_type_option() -> None:
+	"""do_health ships Health Annotation Table.type as Investigation/Treatment; the studio saves
+	encounter drawings as "Derma Annotation", so the option is appended to whatever the site has."""
+	if not frappe.db.exists("DocType", "Health Annotation Table"):
+		return
+	options = frappe.get_meta("Health Annotation Table").get_field("type").options.split("\n")
+	if DERMA_ANNOTATION_TYPE in options:
+		return
+	frappe.make_property_setter(
+		{
+			"doctype": "Health Annotation Table",
+			"fieldname": "type",
+			"property": "options",
+			"value": "\n".join([*options, DERMA_ANNOTATION_TYPE]),
+			"property_type": "Text",
+		},
+		is_system_generated=False,
+		module=DERMA_MODULE,
+	)
 
 
 def _ensure_property_setters() -> None:

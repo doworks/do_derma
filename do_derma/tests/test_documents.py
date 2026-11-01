@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import frappe
+from do_health.services.patient_print import render as render_service
 from frappe.tests import IntegrationTestCase
 
 from do_derma import documents, voice
 from do_derma.assessment import SOAP_FIELDS
 from do_derma.schema import ensure_derma_schema
 from do_derma.tests.test_api import DermaTestHelpers
+from do_derma.tests.test_letterhead import SIGNATURE_SRC, STAMP_SRC, LetterHeadHelpers
+
 
 def blank_pdf() -> bytes:
 	from io import BytesIO
@@ -26,7 +30,7 @@ def blank_pdf() -> bytes:
 REPORT = "## Patient Demographic Data\nName: Test\n## Medications\n- None documented\nDr. Abdulla Sadeq\nConsultant"
 
 
-class TestAiDocuments(DermaTestHelpers, IntegrationTestCase):
+class TestAiDocuments(LetterHeadHelpers, DermaTestHelpers, IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		super().setUpClass()
@@ -36,6 +40,7 @@ class TestAiDocuments(DermaTestHelpers, IntegrationTestCase):
 	def setUp(self):
 		self.addCleanup(frappe.set_user, "Administrator")
 		frappe.set_user("Administrator")
+		self.letter_head = self._make_letter_head(is_default=1)
 		self.encounter = self._make_encounter(self._make_patient())
 		frappe.db.set_value("Patient Encounter", self.encounter.name, SOAP_FIELDS[2], "Irritant contact dermatitis")
 		self.encounter.reload()
@@ -52,6 +57,12 @@ class TestAiDocuments(DermaTestHelpers, IntegrationTestCase):
 		self.assertEqual(documents.ensure_document_templates(), [])
 		for spec in documents.KINDS.values():
 			self.assertTrue(frappe.db.exists("Patient Print Template", {"title": documents.TEMPLATE_PREFIX + spec["title"]}))
+
+	def test_every_kind_is_an_allowed_document_type(self):
+		options = frappe.get_meta("Patient Official Document").get_field("document_type").options.split("\n")
+		for spec in documents.KINDS.values():
+			self.assertIn(spec["document_type"], options)
+		self.assertIn("Medical Certificate", options)
 
 	def test_prompt_carries_note_diagnosis_and_addressee(self):
 		context = documents.build_document_context(self.encounter, addressee="Dr. Salman")
@@ -104,7 +115,7 @@ class TestAiDocuments(DermaTestHelpers, IntegrationTestCase):
 			self.assertEqual("نص عربي" in html, has_arabic, language)
 			self.assertEqual("رسالة توضيحية للمريض" in html, has_arabic, language)
 
-	def test_sign_off_block_only_when_the_body_does_not_sign(self):
+	def test_one_sign_off_from_the_record_even_when_the_body_signs(self):
 		letter = self._letter_for(self._doctor("Consultant"))
 		name = frappe.db.get_value("Healthcare Practitioner", letter.practitioner, "practitioner_name")
 		values = letter.get_values()
@@ -130,14 +141,42 @@ class TestAiDocuments(DermaTestHelpers, IntegrationTestCase):
 	def test_issue_renders_body_and_attaches_pdf(self):
 		with self._enabled(), self._llm(REPORT):
 			out = documents.generate_document("education", self.encounter.name)
-		with patch("do_health.do_health.doctype.patient_official_document.patient_official_document.get_pdf", return_value=blank_pdf()):
+		with patch("do_health.do_health.doctype.patient_official_document.patient_official_document.get_pdf", return_value=blank_pdf()) as get_pdf:
 			issued = documents.issue_document(out["name"])
+		self.assertIn(self.letter_head.content, get_pdf.call_args.args[0])
 		self.assertEqual(issued["status"], "Issued")
 		self.assertTrue(issued["pdf_url"])
 		html = frappe.db.get_value("Patient Official Document", out["name"], "rendered_html_snapshot")
 		self.assertIn("<h2", html)
 		self.assertIn("Patient Demographic Data", html)
 		self.assertIn("&bull; None documented", html)
+		self.assertIn(self.letter_head.footer, html)
+
+	def _render_letter(self, practitioner, language="English"):
+		return render_service.render_string(
+			template_html=documents.LETTER_TEMPLATE,
+			practitioner=practitioner,
+			values={"title": "Medical Report", "body": "## Findings\nClear skin", "body_ar": "جلد سليم", "language": language},
+		)
+
+	def test_a_letter_prints_on_the_doctors_letter_head_with_their_mark(self):
+		own = self._make_letter_head()
+		html = self._render_letter(self._make_marked_practitioner(mark="Both", letter_head=own.name))
+		self.assertLess(html.index(own.content), html.index("Clear skin"))
+		self.assertIn(own.footer, html)
+		self.assertNotIn(self.letter_head.content, html)
+		self.assertIn(SIGNATURE_SRC, html)
+		self.assertIn(STAMP_SRC, html)
+
+	def test_a_letter_in_both_languages_is_marked_twice(self):
+		html = self._render_letter(self._make_marked_practitioner(), language="Both")
+		self.assertEqual(html.count('class="derma-signature"'), 2)
+
+	def test_names_in_the_patient_strip_wrap_so_the_letter_fits_the_page(self):
+		html = self._render_letter(self._make_marked_practitioner())
+		cells = re.findall(r'<td style="([^"]*)"><b>(\w+):</b>', html)
+		self.assertEqual([label for _, label in cells], ["Patient", "MRN", "Visit", "Clinician"])
+		self.assertEqual([label for style, label in cells if "nowrap" in style], ["MRN", "Visit"])
 
 	def test_unknown_kind_and_disabled_are_refused(self):
 		with self._enabled():
@@ -146,3 +185,19 @@ class TestAiDocuments(DermaTestHelpers, IntegrationTestCase):
 		with patch.object(voice, "_setting", return_value=0):
 			with self.assertRaises(frappe.ValidationError):
 				documents.generate_document("report", self.encounter.name)
+
+
+class TestLetterSignoff(IntegrationTestCase):
+	def test_signoff_name_is_flagged_in_both_languages(self):
+		english = "Thank you.\n\nYours sincerely,\nDr. Sadiq Abdulla\nConsultant Vascular Surgeon"
+		arabic = "شكرا.\n\nمع خالص التحية،\nد. صادق عبد الله\nاستشاري جراحة الأوعية"  # noqa: RUF001
+		self.assertEqual(documents.derma_letter_lines(english, "Dr. Sadiq Abdulla"), ["Thank you."])
+		self.assertEqual(documents.derma_letter_lines(arabic, "Dr. Sadiq Abdulla", english), ["شكرا."])
+
+	def test_name_and_clinic_lines_without_a_closing_line_are_dropped(self):
+		body = "Follow-up in six weeks.\n\nDr. Sadiq Abdulla\n\nSOULVD Demo Clinic"
+		self.assertEqual(documents.derma_letter_lines(body, "Dr. Sadiq Abdulla"), ["Follow-up in six weeks."])
+
+	def test_no_signoff_when_the_body_does_not_sign(self):
+		lines = documents.derma_letter_lines("## Heading\n- point\n\nText.", "Dr. Sadiq Abdulla")
+		self.assertEqual(lines, ["## Heading", "- point", "Text."])

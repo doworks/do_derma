@@ -7,7 +7,13 @@ from frappe.tests import IntegrationTestCase
 
 import do_derma.api as api
 from do_derma import assessment
-from do_derma.schema import ensure_derma_schema
+from do_derma.schema import (
+	AI_DIAGNOSIS_FIELD,
+	ICD10_FIELD,
+	PRINT_PATIENT_ADVICE_FIELD,
+	VOICE_TRANSCRIPT_FIELD,
+	ensure_derma_schema,
+)
 from do_derma.settings import SETTINGS_DOCTYPE
 from do_derma.tests.test_api import DermaTestHelpers
 
@@ -242,3 +248,98 @@ class TestAssessmentAccessGate(AssessmentTestBase):
 		frappe.set_user(self._make_limited_user())
 		with self.assertRaises(frappe.PermissionError):
 			api.get_derma_assessment(encounter="does-not-matter")
+
+
+DIAGNOSIS_TABLE = {
+	"fieldtype": "Table",
+	"fieldname": "diagnosis",
+	"fields": [
+		{"fieldname": "code", "label": "Code", "fieldtype": "Data"},
+		{"fieldname": "description", "label": "Description", "fieldtype": "Data"},
+	],
+}
+
+
+class TestPreviewText(IntegrationTestCase):
+	def test_a_table_previews_its_rows_not_a_count(self):
+		rows = [{"code": "L29.8", "description": "Other pruritus"}, {"code": "L21.0", "description": ""}]
+		self.assertEqual(assessment.get_preview_text(DIAGNOSIS_TABLE, rows), "L29.8 Other pruritus; L21.0")
+
+	def test_a_table_of_empty_rows_previews_nothing(self):
+		self.assertEqual(assessment.get_preview_text(DIAGNOSIS_TABLE, [{"code": "", "description": " "}]), "")
+		self.assertEqual(assessment.get_preview_text(DIAGNOSIS_TABLE, []), "")
+
+	def test_a_text_field_previews_plain_text(self):
+		self.assertEqual(
+			assessment.get_preview_text({"fieldtype": "Text Editor"}, "<p>Dry &amp; flaky.</p>"),
+			"Dry & flaky.",
+		)
+
+
+class TestClearAssessment(AssessmentTestBase):
+	"""Clear note empties every format; Clear AI empties only the scribe's side outputs."""
+
+	def _filled(self):
+		encounter = self._make_encounter(self._make_patient())
+		structured = next(
+			row["fieldname"]
+			for row in assessment.get_structured_layout()
+			if row.get("is_value_field") and row.get("fieldtype") in ("Small Text", "Text", "Long Text", "Data")
+		)
+		frappe.db.set_value(
+			"Patient Encounter",
+			encounter.name,
+			{
+				structured: "Worse at night",
+				"custom_derma_soap_subjective": "Itchy rash",
+				"custom_derma_hp_history": "Two weeks",
+				AI_DIAGNOSIS_FIELD: "Eczema",
+				ICD10_FIELD: "L30.9",
+				VOICE_TRANSCRIPT_FIELD: "The patient says it itches.",
+				PRINT_PATIENT_ADVICE_FIELD: 1,
+			},
+		)
+		return encounter
+
+	def test_clear_note_empties_every_format_and_keeps_ai(self):
+		encounter = self._filled()
+		result = api.clear_derma_assessment(scope="note", encounter=encounter.name)
+		self.assertFalse(any(result["values"].values()))
+		self.assertFalse(any(result["soap_values"].values()))
+		self.assertFalse(any(result["hp_values"].values()))
+		self.assertEqual(result["ai_diagnosis"], "Eczema")
+
+	def test_clear_note_empties_the_diagnosis_table(self):
+		if not any(row["fieldname"] == "diagnosis" for row in assessment.get_structured_layout()):
+			self.skipTest("The Structured layout has no diagnosis table on this site")
+		encounter = self._filled()
+		if not frappe.db.exists("Diagnosis", "Derma Clear Test"):
+			frappe.get_doc({"doctype": "Diagnosis", "diagnosis": "Derma Clear Test"}).insert(ignore_permissions=True)
+		doc = frappe.get_doc("Patient Encounter", encounter.name)
+		doc.append("diagnosis", {"diagnosis": "Derma Clear Test"})
+		doc.save(ignore_permissions=True)
+		api.clear_derma_assessment(scope="note", encounter=encounter.name)
+		self.assertFalse(frappe.get_all("Patient Encounter Diagnosis", {"parent": encounter.name}))
+
+	def test_clear_ai_keeps_the_note(self):
+		encounter = self._filled()
+		result = api.clear_derma_assessment(scope="ai", encounter=encounter.name)
+		self.assertEqual((result["ai_diagnosis"], result["icd10"]), ("", ""))
+		self.assertFalse(result["print_patient_advice"])
+		self.assertFalse(frappe.db.get_value("Patient Encounter", encounter.name, VOICE_TRANSCRIPT_FIELD))
+		self.assertEqual(result["soap_values"]["custom_derma_soap_subjective"], "Itchy rash")
+
+	def test_an_unknown_scope_is_refused(self):
+		encounter = self._filled()
+		with self.assertRaises(frappe.ValidationError):
+			api.clear_derma_assessment(scope="everything", encounter=encounter.name)
+
+	def test_a_completed_visit_cannot_be_cleared(self):
+		encounter = self._make_encounter(self._make_patient(), docstatus=1)
+		with self.assertRaises(frappe.ValidationError):
+			api.clear_derma_assessment(scope="note", encounter=encounter.name)
+
+	def test_clear_is_gated(self):
+		frappe.set_user(self._make_limited_user())
+		with self.assertRaises(frappe.PermissionError):
+			api.clear_derma_assessment(scope="note", encounter="does-not-matter")

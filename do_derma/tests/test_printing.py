@@ -10,6 +10,7 @@ from do_derma.schema import ensure_derma_schema
 from do_derma.tests.test_api import DermaTestHelpers
 from do_derma.tests.test_config_workspace import ConfigTemplateHelpers
 from do_derma.tests.test_consumables import ConsumableHelpers
+from do_derma.tests.test_letterhead import SIGNATURE_SRC, STAMP_SRC, LetterHeadHelpers
 
 LEGACY_BLOCK = """
 <!-- do_derma:assessment -->
@@ -25,7 +26,7 @@ LEGACY_BLOCK = """
 """
 
 
-class PrintingTestBase(DermaTestHelpers, IntegrationTestCase):
+class PrintingTestBase(LetterHeadHelpers, DermaTestHelpers, IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		super().setUpClass()
@@ -34,6 +35,7 @@ class PrintingTestBase(DermaTestHelpers, IntegrationTestCase):
 	def setUp(self):
 		self.addCleanup(frappe.set_user, "Administrator")
 		frappe.set_user("Administrator")
+		self.letter_head = self._make_letter_head(is_default=1)
 
 	def _soap_encounter(self, **narratives):
 		encounter = self._make_encounter(self._make_patient())
@@ -521,23 +523,69 @@ class TestPrintedEncounter(PrintingTestBase):
 		self.assertIn("L24.0", printed)
 		self.assertLess(printed.index("L24.0"), printed.index("Topical steroid twice daily"))
 
+	def test_note_prints_on_the_default_letter_head(self):
+		note.ensure_assessment_print_format()
+		encounter = self._soap_encounter(custom_derma_soap_plan="Topical steroid twice daily")
+		printed = frappe.get_print("Patient Encounter", encounter.name, print_format=note.PRINT_FORMATS[assessment.SOAP])
+		self.assertLess(printed.index(self.letter_head.content), printed.index("Topical steroid twice daily"))
+		self.assertIn(self.letter_head.footer, printed)
+		self.assertIn('id="footer-html"', printed)
+		self.assertNotIn("CR No. 100506-1", printed)
+		# Frappe's `table td div { page-break-inside: avoid }` would push the whole body to page 2.
+		self.assertIn(".derma-letterhead td div { page-break-inside: auto !important; }", printed)
+		self.assertIn('class="derma-signature"', printed)
+
+	def test_doctor_with_own_letter_head_prints_it_with_their_signature_and_stamp(self):
+		note.ensure_assessment_print_format()
+		own = self._make_letter_head()
+		practitioner = self._make_marked_practitioner(mark="Both", letter_head=own.name)
+		encounter = self._soap_encounter(custom_derma_soap_plan="Compression stockings")
+		encounter.db_set("practitioner", practitioner.name)
+		printed = frappe.get_print("Patient Encounter", encounter.name, print_format=note.PRINT_FORMATS[assessment.SOAP])
+		self.assertIn(own.content, printed)
+		self.assertIn(own.footer, printed)
+		self.assertNotIn(self.letter_head.content, printed)
+		self.assertIn(SIGNATURE_SRC, printed)
+		self.assertIn(STAMP_SRC, printed)
+
+	def test_note_without_a_practitioner_prints_on_the_default_without_a_mark(self):
+		note.ensure_assessment_print_format()
+		encounter = self._soap_encounter(custom_derma_soap_plan="Emollients")
+		encounter.db_set("practitioner", None)
+		printed = frappe.get_print("Patient Encounter", encounter.name, print_format=note.PRINT_FORMATS[assessment.SOAP])
+		self.assertIn(self.letter_head.content, printed)
+		self.assertNotIn('class="derma-signature"', printed)
+
+	def test_arabic_vowel_marks_are_dropped_so_every_word_prints_in_one_font(self):
+		note.ensure_assessment_print_format()
+		encounter = self._soap_encounter(
+			custom_derma_soap_plan="كريم موضعي مرتين يومياً",
+			custom_derma_patient_advice_ar="يرجى العودة بعد ستة أسابيع. اعتنِ بنفسك!",
+			custom_derma_patient_advice_language="Arabic",
+			custom_derma_print_patient_advice=1,
+		)
+		printed = frappe.get_print("Patient Encounter", encounter.name, print_format=note.PRINT_FORMATS[assessment.SOAP])
+		self.assertIn("اعتن بنفسك!", printed)
+		self.assertIn("مرتين يوميا", printed)
+		self.assertNotIn("ِ", printed)
+
 	def test_advice_language_follows_the_report_or_the_doctor(self):
 		encounter = self._soap_encounter(
 			custom_derma_soap_plan="كريم موضعي مرتين يومياً",
 			custom_derma_patient_advice="Apply the cream twice a day.",
-			custom_derma_patient_advice_ar="ضعي الكريم مرتين يومياً.",
+			custom_derma_patient_advice_ar="ضعي الكريم مرتين يوميا.",
 			custom_derma_print_patient_advice=1,
 		)
 		fmt = note.PRINT_FORMATS[assessment.SOAP]
 
 		self.assertEqual(note.advice_languages(encounter), ["Arabic"])  # Auto: the report is Arabic
 		printed = frappe.get_print("Patient Encounter", encounter.name, print_format=fmt)
-		self.assertIn("ضعي الكريم مرتين يومياً.", printed)
+		self.assertIn("ضعي الكريم مرتين يوميا.", printed)
 		self.assertNotIn("Apply the cream twice a day.", printed)
 
 		for choice, present, absent in (
-			("English", "Apply the cream twice a day.", "ضعي الكريم مرتين يومياً."),
-			("Arabic", "ضعي الكريم مرتين يومياً.", "Apply the cream twice a day."),
+			("English", "Apply the cream twice a day.", "ضعي الكريم مرتين يوميا."),
+			("Arabic", "ضعي الكريم مرتين يوميا.", "Apply the cream twice a day."),
 		):
 			frappe.db.set_value("Patient Encounter", encounter.name, "custom_derma_patient_advice_language", choice)
 			printed = frappe.get_print("Patient Encounter", encounter.name, print_format=fmt)
@@ -547,14 +595,14 @@ class TestPrintedEncounter(PrintingTestBase):
 		frappe.db.set_value("Patient Encounter", encounter.name, "custom_derma_patient_advice_language", "Both")
 		printed = frappe.get_print("Patient Encounter", encounter.name, print_format=fmt)
 		self.assertIn("Apply the cream twice a day.", printed)
-		self.assertIn("ضعي الكريم مرتين يومياً.", printed)
+		self.assertIn("ضعي الكريم مرتين يوميا.", printed)
 
 	def test_blank_chosen_version_falls_back_to_the_other(self):
 		encounter = self._soap_encounter(
 			custom_derma_soap_plan="Topical steroid twice daily",
-			custom_derma_patient_advice_ar="ضعي الكريم مرتين يومياً.",
+			custom_derma_patient_advice_ar="ضعي الكريم مرتين يوميا.",
 			custom_derma_print_patient_advice=1,
 			custom_derma_patient_advice_language="English",
 		)
 		printed = frappe.get_print("Patient Encounter", encounter.name, print_format=note.PRINT_FORMATS[assessment.SOAP])
-		self.assertIn("ضعي الكريم مرتين يومياً.", printed)
+		self.assertIn("ضعي الكريم مرتين يوميا.", printed)

@@ -9,11 +9,12 @@ import frappe
 from do_health.api.appointment_lifecycle import get_status_by_code, get_terminal_statuses
 from do_health.api.appointment_methods import create_encounter_for_appointment
 from do_health.api.boot import get_current_user_practitioner
+from do_health.api.clinical_profile import build_clinical_profile
 from frappe import _
 from frappe.utils import cint, cstr, flt, getdate, now_datetime, nowdate, nowtime
 from frappe.utils.file_manager import save_file
 
-from do_derma import assessment, previous_visits, reopen, voice
+from do_derma import assessment, consent, previous_visits, reopen, voice
 from do_derma.assessment import CHILD_INTERNAL_FIELDS
 from do_derma.config.marker_size import (
 	MARK_SIZE_FIELD,
@@ -25,15 +26,18 @@ from do_derma.config.marker_size import (
 )
 from do_derma.consumables import marks as consumable_marks
 from do_derma.consumables import procedures as consumable_procedures
-from do_derma.schema import COMPLETION_OVERRIDE_FIELD
+from do_derma.prescriptions import dispense, medications, orders
+from do_derma.printing import pages
+from do_derma.schema import COMPLETION_OVERRIDE_FIELD, PRESCRIPTION_DIAGNOSIS_FIELD
 from do_derma.settings import (
 	ENFORCEMENT_WARN,
 	FEATURE_TOGGLES,
 	get_feature_toggles,
+	get_prescription_warehouse,
 	get_readiness_settings,
 )
 
-MAX_PRESCRIPTION_REPEATS = 12
+ASSESSMENT_CLEARERS = {"note": assessment.clear_notes, "ai": voice.clear_ai_output}
 UNINSTALLED_APP_MESSAGE = re.compile(r"App ([a-z0-9_]+) is not installed", re.IGNORECASE)
 
 DERMA_FINDING_FIELDS = [
@@ -1722,7 +1726,8 @@ def _get_derma_procedures(
 			"Clinical Procedure Template",
 			filters={"name": ["in", template_names]},
 			fields=_select_existing_fields(
-				"Clinical Procedure Template", ["name", "template", "custom_derma_category"]
+				"Clinical Procedure Template",
+				["name", "template", "custom_derma_category", "custom_derma_consent_required"],
 			),
 		)
 		template_map = {row.name: row for row in template_labels}
@@ -1731,8 +1736,13 @@ def _get_derma_procedures(
 			if template:
 				row["template_label"] = template.get("template") or template.get("name")
 				row["derma_category"] = template.get("custom_derma_category")
+				row["consent_required"] = cint(template.get("custom_derma_consent_required"))
 	if procedure_names:
 		_enrich_derma_procedure_rows(rows, procedure_names)
+	coverage = consent.get_consent_coverage(procedure_names)
+	for row in rows:
+		row.setdefault("consent_required", 0)
+		row["consents"] = coverage.get(row.get("name"), [])
 	return rows
 
 
@@ -2207,23 +2217,10 @@ def _drug_prescription_row(source: Any, allowed: set[str]) -> dict[str, Any]:
 	return {key: values.get(key) for key in allowed if key in values}
 
 
-def _validate_prescription_rows(rows: list[dict[str, Any]]) -> None:
-	"""Refuse a repeat count no clinician means, which a typo in the wrong column produces."""
-	for index, row in enumerate(rows, start=1):
-		repeats = flt(row.get("number_of_repeats_allowed") or 0)
-		if repeats < 0 or repeats > MAX_PRESCRIPTION_REPEATS:
-			frappe.throw(
-				_("Row {0}: repeats must be between 0 and {1}.").format(index, MAX_PRESCRIPTION_REPEATS),
-				frappe.ValidationError,
-			)
-
-
-def _merge_ordered_prescriptions(
-	existing: list[dict[str, Any]], incoming: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-	"""Rows already ordered as a Medication Request are kept as stored, ahead of the new ones."""
+def _merge_ordered_prescriptions(existing: list, incoming: list[dict[str, Any]]) -> list:
+	"""Rows already ordered keep their stored child document (and name), ahead of the new ones."""
 	ordered = [row for row in existing if row.get("medication_request")]
-	known = {row["medication_request"] for row in ordered}
+	known = {row.medication_request for row in ordered}
 	fresh = []
 	for row in incoming:
 		request = row.get("medication_request")
@@ -2241,7 +2238,13 @@ def _drug_prescription_rows(encounter_doc) -> list[dict[str, Any]]:
 	if not _has_field("Patient Encounter", "drug_prescription"):
 		return []
 	allowed = _drug_prescription_fields()
-	return [_drug_prescription_row(row, allowed) for row in encounter_doc.get("drug_prescription") or []]
+	rows = encounter_doc.get("drug_prescription") or []
+	quantities = dispense.get_quantities(rows)
+	return [{**_drug_prescription_row(row, allowed), "name": row.name, **quantities[row.name]} for row in rows]
+
+
+def _get_assessment_diagnosis(encounter_doc) -> str:
+	return _join_unique(row.diagnosis for row in encounter_doc.get("diagnosis") or [])
 
 
 def _get_derma_prescription_count(encounter: str | None) -> int:
@@ -2302,11 +2305,14 @@ def get_inventory_readiness(
 		patient = frappe.db.get_value("Patient Encounter", encounter, "patient")
 	if not patient:
 		return []
-	return inventory.build(
+	marks, procedure_rows = inventory.select_open_work(
 		_get_marks(patient, appointment=appointment, encounter=encounter),
-		consumable_procedures.get_carriers(
-			_get_derma_procedures(patient, appointment=appointment, encounter=encounter)
-		),
+		_get_derma_procedures(patient, appointment=appointment, encounter=encounter),
+	)
+	return inventory.build(
+		marks,
+		consumable_procedures.get_carriers(procedure_rows),
+		expiring_soon_days=get_readiness_settings()["expiring_soon_days"],
 	)
 
 
@@ -2324,7 +2330,7 @@ def _get_previous_marks(patient: str, current_encounter: str | None = None) -> l
 		limit=500,
 	)
 	visible = [row for row in rows if row.get("status") != "Archived"]
-	consumable_marks.hydrate(visible)
+	consumable_marks.hydrate(visible, is_current=False)
 	return visible
 
 
@@ -2643,6 +2649,11 @@ def get_patient_derma_chart(
 			lambda: _get_previous_marks(patient, current_encounter=encounter_id),
 		),
 		"categories": section("categories", [], _get_categories),
+		"clinical_profile": section(
+			"clinical profile",
+			None,
+			lambda: build_clinical_profile(frappe.get_doc("Patient", patient)) if patient else None,
+		),
 		"timeline": section(
 			"patient timeline",
 			[],
@@ -2666,7 +2677,7 @@ def get_patient_derma_chart(
 		"settings": get_feature_toggles(),
 		"context_errors": context_errors,
 		"latest_encounter": previous_visits.get_latest_encounter(patient) if patient else None,
-		**_get_visit_moment_fields(encounter_id),
+		**_get_visit_moment_fields(encounter_id, context["appointment"]),
 		"permissions": {
 			"can_reopen_encounter": bool(encounter_id)
 			and bool(frappe.has_permission("Patient Encounter", "cancel", doc=encounter_id)),
@@ -3424,6 +3435,24 @@ def set_derma_assessment_mode(mode, encounter=None, appointment=None, patient=No
 
 
 @frappe.whitelist()
+def clear_derma_assessment(scope, encounter=None, appointment=None, patient=None):
+	"""Empty the note in every format, or the voice scribe's side outputs."""
+	_ensure_clinical_access()
+	clear = ASSESSMENT_CLEARERS.get(scope)
+	if not clear:
+		frappe.throw(_("Unknown clear scope {0}.").format(scope), frappe.ValidationError)
+	encounter_doc = _resolve_patient_encounter_doc(
+		encounter=encounter, appointment=appointment, patient=patient, ptype="write"
+	)
+	if not encounter_doc:
+		frappe.throw(_("No encounter found for this session."), frappe.DoesNotExistError)
+	_ensure_encounter_open(encounter_doc.name)
+	clear(encounter_doc)
+	encounter_doc.save(ignore_permissions=True)
+	return get_derma_assessment(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
 def get_derma_prescriptions(encounter=None, appointment=None, patient=None):
 	_ensure_clinical_access()
 	encounter_doc = _resolve_patient_encounter_doc(
@@ -3432,11 +3461,25 @@ def get_derma_prescriptions(encounter=None, appointment=None, patient=None):
 	return {
 		"encounter": encounter_doc.name if encounter_doc else encounter or "",
 		"drug_prescription": _drug_prescription_rows(encounter_doc) if encounter_doc else [],
+		"diagnosis": cstr(encounter_doc.get(PRESCRIPTION_DIAGNOSIS_FIELD)) if encounter_doc else "",
+		"assessment_diagnosis": _get_assessment_diagnosis(encounter_doc) if encounter_doc else "",
 	}
 
 
 @frappe.whitelist()
-def set_derma_prescriptions(payload=None, encounter=None, appointment=None, patient=None):
+def get_previous_prescriptions(encounter=None, appointment=None, patient=None, start=0, limit=5):
+	"""Earlier visits' prescriptions with what the pharmacy dispensed, a page of cards at a time."""
+	_ensure_clinical_access()
+	encounter_doc = _resolve_patient_encounter_doc(
+		encounter=encounter, appointment=appointment, patient=patient
+	)
+	if not encounter_doc or not _has_field("Patient Encounter", "drug_prescription"):
+		return {"cards": [], "has_more": False}
+	return dispense.get_previous_cards(encounter_doc, max(cint(start), 0), min(max(cint(limit), 1), 20))
+
+
+@frappe.whitelist()
+def set_derma_prescriptions(payload=None, encounter=None, appointment=None, patient=None, diagnosis=None):
 	_ensure_clinical_access()
 	if not _has_field("Patient Encounter", "drug_prescription"):
 		return {"encounter": encounter or "", "drug_prescription": []}
@@ -3451,11 +3494,67 @@ def set_derma_prescriptions(payload=None, encounter=None, appointment=None, pati
 	_ensure_encounter_open(encounter_doc.name)
 	allowed = _drug_prescription_fields()
 	prescriptions = [_drug_prescription_row(row, allowed) for row in rows if isinstance(row, dict)]
-	_validate_prescription_rows(prescriptions)
-	prescriptions = _merge_ordered_prescriptions(_drug_prescription_rows(encounter_doc), prescriptions)
+	prescriptions = _merge_ordered_prescriptions(encounter_doc.get("drug_prescription") or [], prescriptions)
 	encounter_doc.set("drug_prescription", prescriptions)
+	for index, row in enumerate(encounter_doc.drug_prescription, start=1):
+		row.idx = index
+	if diagnosis is not None and _has_field("Patient Encounter", PRESCRIPTION_DIAGNOSIS_FIELD):
+		encounter_doc.set(PRESCRIPTION_DIAGNOSIS_FIELD, cstr(diagnosis).strip())
 	encounter_doc.save(ignore_permissions=True)
-	return {"encounter": encounter_doc.name, "drug_prescription": _drug_prescription_rows(encounter_doc)}
+	return get_derma_prescriptions(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
+def submit_derma_prescriptions(encounter=None, appointment=None, patient=None):
+	"""Order the saved, not-yet-ordered rows as Medication Requests; the visit stays open."""
+	_ensure_clinical_access()
+	encounter_doc = _resolve_patient_encounter_doc(
+		encounter=encounter, appointment=appointment, patient=patient, ptype="write"
+	)
+	if not encounter_doc:
+		frappe.throw(_("No encounter found for this session."), frappe.ValidationError)
+	_ensure_encounter_open(encounter_doc.name)
+	rows = encounter_doc.get("drug_prescription") or []
+	if not any((row.medication or row.drug_code) and not row.medication_request for row in rows):
+		frappe.throw(_("Nothing to order: save new medications first."), frappe.ValidationError)
+	encounter_doc.make_medication_request()
+	encounter_doc.save(ignore_permissions=True)
+	return get_derma_prescriptions(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
+def cancel_derma_prescriptions(rows=None, encounter=None, appointment=None, patient=None):
+	"""Cancel ordered rows (all when `rows` is empty) and unlock them; refused once anything is dispensed."""
+	_ensure_clinical_access()
+	encounter_doc = _resolve_patient_encounter_doc(
+		encounter=encounter, appointment=appointment, patient=patient, ptype="write"
+	)
+	if not encounter_doc:
+		frappe.throw(_("No encounter found for this session."), frappe.ValidationError)
+	_ensure_encounter_open(encounter_doc.name)
+	names = [] if rows in (None, "") else _parse_payload(rows)
+	if not isinstance(names, list):
+		frappe.throw(_("Rows must be a list."), frappe.ValidationError)
+	orders.cancel(encounter_doc, names)
+	encounter_doc.save(ignore_permissions=True)
+	return get_derma_prescriptions(encounter=encounter_doc.name)
+
+
+@frappe.whitelist()
+def get_medication_items(medication: str) -> dict[str, Any]:
+	"""The medication's items with their stock in the prescription warehouse."""
+	_ensure_clinical_access()
+	warehouse = get_prescription_warehouse()
+	return {"warehouse": warehouse or "", "items": medications.get_items(medication, warehouse)}
+
+
+@frappe.whitelist()
+def search_prescription_medications(txt: str = "", encounter: str | None = None) -> dict[str, Any]:
+	"""The Rx medication picker's results, ranked for the encounter's practitioner."""
+	_ensure_clinical_access()
+	practitioner = frappe.db.get_value("Patient Encounter", encounter, "practitioner") if encounter else None
+	warehouse = get_prescription_warehouse()
+	return {"warehouse": warehouse or "", "results": medications.search(txt or "", practitioner, warehouse)}
 
 
 @frappe.whitelist()
@@ -3465,33 +3564,6 @@ def get_derma_anesthesia(encounter=None, appointment=None, patient=None):
 		encounter=encounter, appointment=appointment, patient=patient
 	)
 	return {"encounter": encounter_doc.name if encounter_doc else encounter or "", "anesthesia": []}
-
-
-@frappe.whitelist()
-def get_derma_consents(encounter=None, appointment=None, patient=None):
-	_ensure_clinical_access()
-	doctype = "Encounter Consent" if _has_doctype("Encounter Consent") else "Consent Form"
-	if not _has_doctype(doctype):
-		return []
-	filters: dict[str, Any] = {}
-	if encounter and _has_field(doctype, "encounter"):
-		filters["encounter"] = encounter
-	if appointment and _has_field(doctype, "appointment"):
-		filters["appointment"] = appointment
-	if patient and _has_field(doctype, "patient"):
-		filters["patient"] = patient
-	if not filters:
-		return []
-	fields = _select_existing_fields(
-		doctype,
-		["name", "consent_form_template", "status", "signed_by", "signed_on", "modified", "docstatus"],
-	)
-	rows = frappe.get_all(
-		doctype, filters=filters, fields=fields, order_by="modified desc", limit_page_length=100
-	)
-	for row in rows:
-		row["doctype"] = doctype
-	return rows
 
 
 @frappe.whitelist()
@@ -3515,71 +3587,41 @@ def create_derma_consent(payload=None):
 		frappe.throw(_("No encounter found for this session."), frappe.DoesNotExistError)
 	_ensure_encounter_open(encounter)
 
-	doctype = "Encounter Consent" if _has_doctype("Encounter Consent") else "Consent Form"
-	if not _has_doctype(doctype):
+	consent_doctype = consent.ConsentDoctype()
+	if not consent_doctype.is_installed:
 		frappe.throw(_("Consent Form is not installed."))
+	procedures = consent.get_selected_procedures(values)
+	consent.validate_procedures(procedures, patient, encounter, _get_clinical_procedure_encounter_field())
+	waiver_reason = consent.get_waiver_reason(values)
 
-	doc = frappe.new_doc(doctype)
+	doc = frappe.new_doc(consent_doctype.name)
 	for fieldname, value in {
 		"patient": patient,
 		"encounter": encounter,
 		"appointment": appointment,
 		"consent_form_template": values.get("consent_form_template"),
 		"company": values.get("company") or frappe.defaults.get_user_default("Company"),
-		"signature": values.get("signature"),
+		"signature": None if waiver_reason else values.get("signature"),
 		"signed_by": values.get("signed_by"),
 		"relationship": values.get("relationship"),
 	}.items():
-		if value and _has_field(doctype, fieldname):
+		if value and _has_field(consent_doctype.name, fieldname):
 			doc.set(fieldname, value)
+	consent_doctype.set_procedures(doc, procedures)
 
-	procedure_items = values.get("procedure_items") or values.get("procedure_selection") or []
-	if doctype == "Encounter Consent" and _has_field(doctype, "procedure_items"):
-		for row in procedure_items:
-			if isinstance(row, str):
-				row = {"clinical_procedure": row}
-			if not isinstance(row, dict):
-				continue
-			doc.append(
-				"procedure_items",
-				{
-					"clinical_procedure": row.get("clinical_procedure") or row.get("value"),
-					"procedure_template": row.get("procedure_template"),
-					"display_name": row.get("display_name") or row.get("label"),
-					"teeth": row.get("teeth") or row.get("location") or "",
-				},
-			)
-	elif doctype == "Consent Form" and procedure_items:
-		first = procedure_items[0]
-		if isinstance(first, str):
-			first = {"clinical_procedure": first}
-		if isinstance(first, dict):
-			clinical_procedure = first.get("clinical_procedure") or first.get("value")
-			if clinical_procedure and _has_field(doctype, "clinical_procedure"):
-				doc.clinical_procedure = clinical_procedure
-			procedure_template = first.get("procedure_template")
-			if (
-				not procedure_template
-				and clinical_procedure
-				and _has_field("Clinical Procedure", "procedure_template")
-			):
-				procedure_template = frappe.db.get_value(
-					"Clinical Procedure", clinical_procedure, "procedure_template"
-				)
-			if procedure_template and _has_field(doctype, "procedure_template"):
-				doc.procedure_template = procedure_template
-
-	if doc.get("consent_form_template") and hasattr(doc, "render_template"):
-		doc.render_template()
-	if values.get("rendered_html") and _has_field(doctype, "rendered_html"):
+	if doc.get("consent_form_template"):
+		consent_doctype.render(doc, procedures)
+	if values.get("rendered_html") and _has_field(consent_doctype.name, "rendered_html"):
 		doc.rendered_html = values.get("rendered_html")
+	if waiver_reason:
+		consent_doctype.waive_signature(doc, waiver_reason)
 
 	doc.insert(ignore_permissions=True)
 	if doc.meta.is_submittable and doc.get("signature") and doc.get("signed_by"):
 		doc.submit()
 	return {
 		"name": doc.name,
-		"doctype": doctype,
+		"doctype": consent_doctype.name,
 		"rendered_html": doc.get("rendered_html"),
 		"status": doc.get("status"),
 		"docstatus": doc.docstatus,
@@ -3594,10 +3636,11 @@ def render_derma_consent_preview(payload=None):
 	consent_template = values.get("consent_form_template")
 	if not consent_template:
 		return {"rendered_html": ""}
-	doctype = "Encounter Consent" if _has_doctype("Encounter Consent") else "Consent Form"
-	if not _has_doctype(doctype):
+	consent_doctype = consent.ConsentDoctype()
+	if not consent_doctype.is_installed:
 		return {"rendered_html": ""}
-	doc = frappe.new_doc(doctype)
+	procedures = consent.get_selected_procedures(values)
+	doc = frappe.new_doc(consent_doctype.name)
 	for fieldname, value in {
 		"patient": values.get("patient"),
 		"encounter": values.get("encounter"),
@@ -3605,22 +3648,33 @@ def render_derma_consent_preview(payload=None):
 		"consent_form_template": consent_template,
 		"company": values.get("company") or frappe.defaults.get_user_default("Company"),
 	}.items():
-		if value and _has_field(doctype, fieldname):
+		if value and _has_field(consent_doctype.name, fieldname):
 			doc.set(fieldname, value)
-	if hasattr(doc, "render_template"):
-		try:
-			doc.render_template()
-		except Exception as exc:
-			# The renderer lives in the health app and trips over templates it cannot read.
-			# Name the template so an administrator can fix it instead of the clinician retrying.
-			frappe.log_error(frappe.get_traceback(), "Derma consent preview render failed")
-			return {
-				"rendered_html": "",
-				"error": _("Consent template {0} could not be rendered: {1}").format(
-					consent_template, str(exc) or exc.__class__.__name__
-				),
-			}
+	consent_doctype.set_procedures(doc, procedures)
+	try:
+		consent_doctype.render(doc, procedures)
+	except Exception as exc:
+		# Name the template so an administrator can fix it instead of the clinician retrying.
+		frappe.log_error(frappe.get_traceback(), "Derma consent preview render failed")
+		return {
+			"rendered_html": "",
+			"error": _("Consent template {0} could not be rendered: {1}").format(
+				consent_template, str(exc) or exc.__class__.__name__
+			),
+		}
 	return {"rendered_html": doc.get("rendered_html") or ""}
+
+
+def get_consent_doc(name: str):
+	"""The consent under either consent doctype, rendered from its template if it never was."""
+	doctype = consent.ConsentDoctype().name
+	if not frappe.db.exists(doctype, name):
+		doctype = consent.CONSENT_FORM
+	doc = frappe.get_doc(doctype, name)
+	if not doc.get("rendered_html") and doc.get("consent_form_template") and hasattr(doc, "render_template"):
+		doc.render_template()
+		doc.save(ignore_permissions=True)
+	return doc
 
 
 @frappe.whitelist()
@@ -3628,24 +3682,33 @@ def get_derma_consent_html(name: str):
 	_ensure_clinical_access()
 	if not name:
 		frappe.throw(_("Consent is required."), frappe.ValidationError)
-	doctype = (
-		"Encounter Consent"
-		if _has_doctype("Encounter Consent") and frappe.db.exists("Encounter Consent", name)
-		else "Consent Form"
-	)
-	doc = frappe.get_doc(doctype, name)
-	if not doc.get("rendered_html") and doc.get("consent_form_template") and hasattr(doc, "render_template"):
-		doc.render_template()
-		doc.save(ignore_permissions=True)
+	doc = get_consent_doc(name)
 	return {
 		"name": doc.name,
-		"doctype": doctype,
+		"doctype": doc.doctype,
 		"consent_form_template": doc.get("consent_form_template"),
 		"rendered_html": doc.get("rendered_html"),
 		"status": doc.get("status"),
 		"signed_by": doc.get("signed_by"),
 		"signed_on": doc.get("signed_on"),
 	}
+
+
+@frappe.whitelist()
+def get_derma_print_html(kind: str, name: str, body: str | None = None) -> dict[str, str]:
+	"""A whole printable page on the practitioner's Letter Head: {"title", "html"}."""
+	_ensure_clinical_access()
+	if not name:
+		frappe.throw(_("Choose what to print."), frappe.ValidationError)
+	if kind == "consent":
+		return pages.get_consent_page(get_consent_doc(name))
+	if kind == "blank_consent":
+		return pages.get_blank_consent_page(name, body)
+	if kind == "annotation":
+		return pages.get_annotation_page(name)
+	if kind == "prescription":
+		return pages.get_prescription_page(name)
+	frappe.throw(_("Unknown printable: {0}").format(kind), frappe.ValidationError)
 
 
 @frappe.whitelist()
@@ -3713,6 +3776,10 @@ def delete_clinical_procedure_entry(doctype: str, name: str):
 		frappe.throw(_("Not permitted"), frappe.PermissionError)
 	if cint(doc.docstatus) != 0:
 		frappe.throw(_("Only draft procedures can be deleted. Cancel a submitted procedure instead."))
+	if consent.get_consent_coverage([name]).get(name):
+		frappe.throw(
+			_("A signed consent covers this procedure, so it cannot be deleted."), frappe.ValidationError
+		)
 	frappe.delete_doc(doctype, name, ignore_permissions=True)
 	return True
 
@@ -4539,11 +4606,14 @@ def _attach_photo_files(doc) -> None:
 		)
 
 
-def _normalize_derma_body_view(value: Any) -> str | None:
-	"""The chart names body templates freely; the set stores one of a fixed set of views."""
+def _normalize_derma_body_view(value: Any) -> str:
+	"""The chart names body templates freely; the set stores one of a fixed set of views.
+
+	No view is written as "": Frappe fills an empty Select with its first option on insert.
+	"""
 	view = str(value or "").strip()
 	if not view:
-		return None
+		return ""
 	options = frappe.get_meta("Derma Photo Set").get_field("body_view").options.split("\n")
 	offered = [option for option in options if option]
 	for option in offered:
@@ -4721,6 +4791,28 @@ def _load_visit_drawings(encounter: str) -> list[dict[str, Any]]:
 	return _load_annotations_for_parents(parents, include_scene=False)
 
 
+def _load_visit_procedure_titles(doc) -> list[str]:
+	"""A visit's non-cancelled procedure titles, named as the summary names them, without the full rows."""
+	field = _get_clinical_procedure_encounter_field()
+	if not field:
+		return []
+	rows = frappe.get_all(
+		"Clinical Procedure",
+		filters={field: doc.name, "docstatus": ["<", 2]},
+		fields=["name", "procedure_template"],
+		order_by="modified desc",
+		limit=200,
+	)
+	template_names = list({row.procedure_template for row in rows if row.procedure_template})
+	labels = {}
+	if template_names:
+		templates = frappe.get_all(
+			"Clinical Procedure Template", filters={"name": ["in", template_names]}, fields=["name", "template"]
+		)
+		labels = {template.name: template.template or template.name for template in templates}
+	return [labels.get(row.procedure_template) or row.procedure_template or row.name for row in rows]
+
+
 @frappe.whitelist()
 def get_previous_visits(patient: str, current_encounter: str | None = None, start: int = 0, page_length: int = 5):
 	_ensure_clinical_access()
@@ -4734,12 +4826,14 @@ def get_previous_visits(patient: str, current_encounter: str | None = None, star
 		cint(start),
 		max(1, min(cint(page_length) or 5, 20)),
 		_load_visit_drawings,
+		_load_visit_procedure_titles,
 	)
 
 
-def _get_visit_moment_fields(encounter: str | None) -> dict[str, Any]:
+def _get_visit_moment_fields(encounter: str | None, appointment: dict[str, Any] | None = None) -> dict[str, Any]:
 	if not encounter:
-		return {"visit_date": None, "visit_time": None}
+		appointment = appointment or {}
+		return {"visit_date": appointment.get("appointment_date"), "visit_time": appointment.get("appointment_time")}
 	moment = previous_visits.get_visit_moment(encounter)
 	return {"visit_date": moment.visit_date, "visit_time": moment.visit_time}
 
