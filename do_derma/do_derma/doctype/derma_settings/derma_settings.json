@@ -25,6 +25,7 @@
   "audio_retention_days",
   "recording_storage_path",
   "ai_creates_clinical_masters",
+  "enable_style_learning",
   "voice_column",
   "llm_base_url",
   "llm_model",
@@ -197,13 +198,21 @@
    "default": "0",
    "depends_on": "enable_voice_scribe",
    "description": "Off: a dictated symptom or diagnosis fills the Structured tab only when it already exists in your master list; anything unmatched goes into Symptoms Notes / Diagnosis Note as text. On: the missing master is created automatically."
+  },
+  {
+   "fieldname": "enable_style_learning",
+   "fieldtype": "Check",
+   "label": "Learn each doctor's writing style",
+   "default": "0",
+   "depends_on": "enable_voice_scribe",
+   "description": "Once a day, compares AI drafts with the notes doctors kept and suggests writing rules in Derma Style Rule. Edited notes are sent to the AI provider for this, with the patient's name removed. Nothing changes until someone sets a rule to Active."
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-10 12:00:00.000000",
+ "modified": "2026-11-01 15:00:00",
  "modified_by": "Administrator",
  "module": "Do Derma",
  "name": "Derma Settings",

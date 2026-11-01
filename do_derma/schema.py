@@ -41,6 +41,8 @@ HP_ONLY = "eval:doc.custom_derma_assessment_mode=='HP'"
 COMPLETION_OVERRIDE_FIELD = "custom_derma_completion_override_reason"
 # Raw transcript from the voice scribe, kept for audit next to the SOAP fields.
 VOICE_TRANSCRIPT_FIELD = "custom_derma_voice_transcript"
+# The scribe's draft as written, compared with the kept note by do_derma.learning, then deleted.
+AI_DRAFT_FIELD = "custom_derma_ai_draft"
 # Patient advice = the after-visit message the scribe drafts (EN + AR). Printed on the
 # note only when the doctor ticks the box - the same optional block health.soulvd.com has.
 PATIENT_ADVICE_FIELD = "custom_derma_patient_advice"
@@ -185,6 +187,16 @@ DERMA_CUSTOM_FIELDS: dict[str, list[dict[str, Any]]] = {
 			"no_copy": 1,
 			"hidden": 1,
 			"description": "Raw speech-to-text of the recorded consultation, kept for audit.",
+		},
+		{
+			"fieldname": AI_DRAFT_FIELD,
+			"fieldtype": "Long Text",
+			"label": "AI Draft",
+			"insert_after": VOICE_TRANSCRIPT_FIELD,
+			"read_only": 1,
+			"no_copy": 1,
+			"hidden": 1,
+			"description": "The scribe's draft, used to learn the doctor's writing style and then deleted.",
 		},
 		{
 			"fieldname": PATIENT_ADVICE_FIELD,

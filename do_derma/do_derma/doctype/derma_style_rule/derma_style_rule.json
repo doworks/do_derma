@@ -1,0 +1,96 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:DSR-{#####}",
+ "creation": "2026-11-01 15:00:00",
+ "description": "How one doctor likes notes written, learned from what they change in AI drafts. Rules cannot be typed or edited, only approved: Active uses the rule, Rejected stops it being suggested again. Approve only layout and wording rules, never one that adds a fact.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "practitioner",
+  "status",
+  "column_break_1",
+  "visits",
+  "section_rule",
+  "rule"
+ ],
+ "fields": [
+  {
+   "fieldname": "practitioner",
+   "fieldtype": "Link",
+   "label": "Practitioner",
+   "options": "Healthcare Practitioner",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Suggested\nActive\nRejected",
+   "default": "Suggested",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "visits",
+   "fieldtype": "Int",
+   "label": "Seen in Visits",
+   "read_only": 1,
+   "description": "How many reviewed visits showed this change when the rule was suggested."
+  },
+  {
+   "fieldname": "section_rule",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "rule",
+   "fieldtype": "Small Text",
+   "label": "Rule",
+   "in_list_view": 1,
+   "read_only": 1,
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-01 15:00:00",
+ "modified_by": "Administrator",
+ "module": "Do Derma",
+ "name": "Derma Style Rule",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Healthcare Practitioner",
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "in_create": 1
+}

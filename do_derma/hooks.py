@@ -70,5 +70,5 @@ do_health_sidebar_items = ["do_derma.sidebar.get_sidebar_items"]
 after_migrate = "do_derma.install.after_migrate"
 
 scheduler_events = {
-	"daily": ["do_derma.recordings.purge_old_audio"],
+	"daily": ["do_derma.recordings.purge_old_audio", "do_derma.learning.learn_style_rules"],
 }
